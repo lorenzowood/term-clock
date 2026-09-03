@@ -10,12 +10,13 @@ seven thick segments with 45-degree chamfered ends that butt together along
 their diagonals, so a digit is one connected shape.
 
 The shapes are then rasterised with a **best-fit glyph match**. Every candidate
-glyph -- space, the block/eighth/quadrant elements, the four solid triangles
-``◤ ◥ ◣ ◢``, and all 60 sextants (2x3 sub-cell resolution) -- carries a 6x6
-coverage bitmap. For each character cell we sample the vector model on a 6x6
-grid and emit whichever candidate's bitmap is closest. That lets diagonals be
-drawn with real diagonal glyphs and thin strokes snap to eighth-blocks, so the
-forms stay legible from a few rows tall up to full-screen.
+glyph carries a 6x6 coverage bitmap; for each character cell we sample the
+vector model on a 6x6 grid and emit whichever candidate's bitmap is closest.
+The candidate set is deliberately limited to glyphs that render consistently in
+almost every terminal font: space, the full/half/eighth **block** elements, the
+ten **quadrants**, and the four solid **triangles** ``◤ ◥ ◣ ◢``. Diagonals snap
+to the triangles, thin strokes to the eighth-blocks, so the forms stay legible
+from a few rows tall up to full-screen.
 """
 
 from __future__ import annotations
@@ -170,15 +171,6 @@ def _mask_from_fn(fn) -> int:
     return m
 
 
-def _sextant_codepoint(v: int) -> str:
-    off = v - 1
-    if v > 21:
-        off -= 1
-    if v > 42:
-        off -= 1
-    return chr(0x1FB00 + off)
-
-
 def _build_candidates():
     cands: list[tuple[str, int]] = []
 
@@ -213,17 +205,6 @@ def _build_candidates():
     add("◥", lambda x, y: y <= x)
     add("◣", lambda x, y: y >= x)
     add("◢", lambda x, y: x + y >= 1)
-    # sextants (2x3)
-    for v in range(1, 63):
-        if v in (21, 42):
-            continue
-
-        def fn(x, y, v=v):
-            col = 0 if x < 0.5 else 1
-            row = 0 if y < 1 / 3 else (1 if y < 2 / 3 else 2)
-            return bool(v & (1 << (row * 2 + col)))
-
-        add(_sextant_codepoint(v), fn)
     return cands
 
 

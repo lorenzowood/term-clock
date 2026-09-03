@@ -138,12 +138,12 @@ class TestGlyphMatcher:
                     mask |= 1 << (j * core._SS + i)
         assert core._match_char(mask) == "◤"
 
-    def test_sextant_codepoints_in_legacy_block(self):
-        for v in range(1, 63):
-            if v in (21, 42):
-                continue
-            cp = ord(core._sextant_codepoint(v))
-            assert 0x1FB00 <= cp <= 0x1FB3B
+    def test_only_widely_supported_glyphs(self):
+        # everything in the candidate set is space, or in Block Elements
+        # (U+2580..U+259F), or one of the four Geometric-Shapes triangles.
+        for ch, _ in core._CANDIDATES:
+            cp = ord(ch)
+            assert ch == " " or 0x2580 <= cp <= 0x259F or 0x25E2 <= cp <= 0x25E5
 
 
 class TestRenderArt:

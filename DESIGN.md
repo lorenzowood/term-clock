@@ -190,10 +190,20 @@ Rebuilt the big-digit path:
 - `fit_scale` unchanged in spirit (1.5 aspect cap, then centre); tuned the
   readability floor so art still kicks in at 8 rows when width allows.
 
-Tests: added `TestGlyphMatcher` (empty/full/half/diagonal, sextant codepoint
-range) and updated the render assertions for the new glyph set. **49 passed.**
+Tests: added `TestGlyphMatcher` (empty/full/half/diagonal) and updated the
+render assertions for the new glyph set. **49 passed.**
 Visual checks 8x80 … 60x240: connected, legible segmented digits with real
 diagonal chamfers at every size. `cli` tick relaxed to 0.25 s.
+
+### Step 9 — refinement: drop sextants, common glyphs only (feedback)
+
+Feedback: on the test terminal the sextants (`U+1FB00`+) rendered but with
+glitchy, misaligned edges. Removed them from the candidate library. The set is
+now just space + Block Elements (`U+2580..U+259F`: full/half/eighth blocks and
+the ten quadrants) + the four triangles `◤◥◣◢` (`U+25E2..U+25E5`) -- all of
+which have consistent metrics in essentially every terminal font. The chamfers
+are a little chunkier without the 2x3 resolution but the edges are clean.
+`test_only_widely_supported_glyphs` pins the codepoint ranges. **49 passed.**
 
 ## 5. Final state
 
@@ -201,10 +211,10 @@ diagonal chamfers at every size. `cli` tick relaxed to 0.25 s.
 - `core.py` pure and total (returns exact-size grids for any input, including
   degenerate sizes); `cli.py` is the only module that touches the terminal.
 - Big digits: chamfered segmented-display vector model, rasterised by best-fit
-  match against a glyph library (blocks, eighth-blocks, quadrants, triangles,
-  sextants); aspect stretch capped at 1.5x then centred; text fallback below a
-  readability floor.
-- Rendering needs a font with the "Symbols for Legacy Computing" sextants
-  (`U+1FB00`+) and `◤◥◣◢` for best results; most modern terminal fonts have them.
+  match against a small glyph library (full/half/eighth blocks, the ten
+  quadrants, the four triangles `◤◥◣◢`); aspect stretch capped at 1.5x then
+  centred; text fallback below a readability floor.
+- Every render glyph has consistent metrics in standard terminal fonts (Block
+  Elements + four Geometric-Shapes triangles); no exotic codepoints.
 - Known simple choices: 6x6 coverage sampling (no sub-cell anti-aliasing beyond
   the glyph set); colon dots are octagons; glyph constants tuned by eye.
