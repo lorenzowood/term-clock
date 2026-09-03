@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssh-clock"
+version = "1.0.0"
+description = "A terminal digital clock that scales to fill the available space."
+requires-python = ">=3.9"
+
+[project.scripts]
+ssh-clock = "ssh_clock.cli:main"
+
+[tool.setuptools]
+packages = ["ssh_clock"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
