@@ -3,17 +3,20 @@
 Everything here is deterministic and unit-tested. The runtime shell in
 ``cli.py`` supplies the current time and terminal size and paints the result.
 
-Big digits use a **5x7 dot-matrix font** drawn with solid block characters.
-Each matrix "pixel" is blown up to a ``pw`` x ``ph`` rectangle of blocks, and
-``pw`` / ``ph`` are chosen to fill the terminal in both directions (see
-``best_pixel_scale``). This reads far more clearly than thin line art.
+Big digits are drawn from a **vector seven-segment model**: each segment is a
+bold rectangle with small gaps at the joins (a `DSEG`-style display), and the
+colon is two square dots. The shapes are rasterised at whatever size the
+terminal allows, sampled at 2x vertical resolution and emitted with Unicode
+half-block characters (``▀ ▄ █``). All edges are axis-aligned, so the strokes
+stay crisp and bold at any size instead of turning into a coarse grid of giant
+square pixels (too chunky) or thin single-character lines (too faint).
 """
 
 from __future__ import annotations
 
-BLOCK = "█"  # full block
+BLOCK = "█"
 
-# --- time formatting -------------------------------------------------------
+# --- time formatting ---------------------------------------------------
 
 def format_time(h: int, m: int, s: int) -> str:
     """Return ``hh:mm:ss`` (zero-padded, 24-hour)."""
@@ -22,7 +25,7 @@ def format_time(h: int, m: int, s: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-# --- layout decisions ----------------------------------------------------
+# --- layout decision -------------------------------------------------
 
 TEXT_LINE_LIMIT = 7  # "less than seven lines" -> text; 7 stays text too
 
@@ -32,117 +35,142 @@ def choose_mode(rows: int) -> str:
     return "art" if rows > TEXT_LINE_LIMIT else "text"
 
 
-# --- 5x7 dot-matrix font ----------------------------------------------
+# --- vector glyph model --------------------------------------------
 #
-# Each glyph is a list of rows of "0"/"1". Digits are 5 wide, the colon 2 wide;
-# all glyphs are 7 tall. A single blank pixel column separates adjacent glyphs.
+# A digit lives in a local box DW wide x DH tall. A colon lives in a box
+# COLON_W wide x DH tall. Coordinates are arbitrary units; only ratios matter.
 
-GLYPH_H = 7
-DIGIT_W = 5
-COLON_W = 2
-GAP_W = 1
+DW = 100.0
+DH = 180.0
+COLON_W = 30.0
+GAP = 8.0             # space between glyph boxes
 
-_FONT: dict[str, list[str]] = {
-    "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-    "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-    "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-    "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
-    "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-    "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
-    "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
-    "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-    "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-    "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
-    ":": ["00", "11", "11", "00", "11", "11", "00"],
+_M = 6.0             # inset of the segment envelope from the box edge
+_HALF = 11.0         # half of a segment's thickness
+_JOIN = 4.0          # gap between a horizontal bar and the verticals it meets
+
+_MID = DH / 2.0
+_L, _R = _M, DW - _M                       # outer x of the digit envelope
+_XL, _XR = _M + _HALF, DW - _M - _HALF     # centre x of the vertical bars
+_YT, _YB = _M + _HALF, DH - _M - _HALF     # centre y of the top/bottom bars
+
+# Horizontal bars run the full width; vertical bars sit strictly between the
+# horizontals with a _JOIN gap, so the corners are clean (no pokey ends).
+_SEGMENTS: dict[str, tuple[float, float, float, float]] = {
+    "a": (_L, _YT - _HALF, _R, _YT + _HALF),
+    "g": (_L, _MID - _HALF, _R, _MID + _HALF),
+    "d": (_L, _YB - _HALF, _R, _YB + _HALF),
+    "f": (_XL - _HALF, _YT + _HALF + _JOIN, _XL + _HALF, _MID - _HALF - _JOIN),
+    "b": (_XR - _HALF, _YT + _HALF + _JOIN, _XR + _HALF, _MID - _HALF - _JOIN),
+    "e": (_XL - _HALF, _MID + _HALF + _JOIN, _XL + _HALF, _YB - _HALF - _JOIN),
+    "c": (_XR - _HALF, _MID + _HALF + _JOIN, _XR + _HALF, _YB - _HALF - _JOIN),
 }
 
+_DIGIT_SEGMENTS = {
+    0: "abcdef",
+    1: "bc",
+    2: "abged",
+    3: "abgcd",
+    4: "fgbc",
+    5: "afgcd",
+    6: "afgcde",
+    7: "abc",
+    8: "abcdefg",
+    9: "abcdfg",
+}
 
-def glyph_pixels(ch: str) -> list[str]:
-    """The raw 0/1 matrix for a single character (``0``-``9`` or ``:``)."""
-    try:
-        return _FONT[ch]
-    except KeyError:
-        raise ValueError(f"no glyph for {ch!r}") from None
-
-
-def _glyph_width(ch: str) -> int:
-    return COLON_W if ch == ":" else DIGIT_W
-
-
-# --- geometry ----------------------------------------------------------
-
-def block_pixel_size(time_str: str) -> tuple[int, int]:
-    """Size of the whole clock, measured in matrix pixels: ``(width, height)``."""
-    width = sum(_glyph_width(c) for c in time_str)
-    width += GAP_W * (len(time_str) - 1)
-    return width, GLYPH_H
+_COLON_HALF = 11.0
+_COLON_DOTS = [(COLON_W / 2.0, DH * 0.35), (COLON_W / 2.0, DH * 0.65)]
 
 
-def best_pixel_scale(rows: int, cols: int, time_str: str) -> tuple[int, int] | None:
-    """Pixel dimensions ``(pw, ph)`` for the biggest legible clock that fits.
-
-    ``ph`` fills the available height, ``pw`` fills the available width, so the
-    digits use the whole terminal. A legibility clamp then keeps the pixels in
-    a sane aspect band: a terminal cell is roughly twice as tall as it is wide,
-    so ``pw == 2*ph`` looks visually square. We allow bold, wide pixels (up to
-    ``pw == 4*ph``) because fatter strokes read better, and let a pixel stretch
-    up to ``ph == 2*pw`` vertically so a tall, narrow terminal still fills its
-    height — but no further, or the digits get spindly. Returns ``None`` if not
-    even 1x1 pixels fit.
-    """
-    wp, hp = block_pixel_size(time_str)
-    ph = rows // hp
-    pw = cols // wp
-    if ph < 1 or pw < 1:
-        return None
-    pw = min(pw, 4 * ph)
-    ph = min(ph, 2 * pw)
-    return pw, ph
+def digit_ink(value: int, x: float, y: float) -> bool:
+    """Is local point ``(x, y)`` inside digit ``value``'s lit segments?"""
+    for name in _DIGIT_SEGMENTS[value]:
+        x0, y0, x1, y1 = _SEGMENTS[name]
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return True
+    return False
 
 
-# --- rendering -------------------------------------------------------
-
-def _blank_grid(rows: int, cols: int) -> list[list[str]]:
-    return [[" "] * cols for _ in range(rows)]
-
-
-def _place(grid, block: list[str], top: int, left: int) -> None:
-    for r, line in enumerate(block):
-        gr = top + r
-        if 0 <= gr < len(grid):
-            row = grid[gr]
-            for c, ch in enumerate(line):
-                gc = left + c
-                if 0 <= gc < len(row):
-                    row[gc] = ch
+def colon_ink(x: float, y: float) -> bool:
+    """Is local point ``(x, y)`` inside either square colon dot?"""
+    for cx, cy in _COLON_DOTS:
+        if abs(x - cx) <= _COLON_HALF and abs(y - cy) <= _COLON_HALF:
+            return True
+    return False
 
 
-def _pixel_grid(time_str: str) -> list[str]:
-    """Compose the glyphs into one 0/1 pixel grid, ``GLYPH_H`` rows tall."""
-    rows = ["" for _ in range(GLYPH_H)]
+# --- sizing -------------------------------------------------------
+
+MAX_ASPECT = 1.5  # a rendered digit's larger side <= 1.5x its smaller side
+_MIN_DIGIT_SUBPX_H = 12.0  # below this a seven-segment digit is unreadable -> text
+_MIN_DIGIT_SUBPX_W = 8.0
+
+
+def total_local_width(time_str: str) -> float:
+    w = 0.0
     for i, ch in enumerate(time_str):
         if i:
-            for r in range(GLYPH_H):
-                rows[r] += "0" * GAP_W
-        g = glyph_pixels(ch)
-        for r in range(GLYPH_H):
-            rows[r] += g[r]
-    return rows
+            w += GAP
+        w += COLON_W if ch == ":" else DW
+    return w
 
 
-def render_matrix(time_str: str, rows: int, cols: int, pw: int, ph: int) -> list[str]:
-    """Draw ``time_str`` as block digits with ``pw`` x ``ph`` pixels, centred."""
-    pixels = _pixel_grid(time_str)
-    block = [
-        "".join((BLOCK if bit == "1" else " ") * pw for bit in prow)
-        for prow in pixels
-        for _ in range(ph)
-    ]
-    bw = len(block[0]) if block else 0
-    bh = len(block)
-    grid = _blank_grid(rows, cols)
-    _place(grid, block, (rows - bh) // 2, (cols - bw) // 2)
-    return ["".join(r) for r in grid]
+def fit_scale(rows: int, cols: int, time_str: str = "12:34:56") -> tuple[float, float] | None:
+    """Horizontal & vertical scale (local units -> subpixels) for the clock.
+
+    The subpixel canvas is ``cols`` wide and ``2*rows`` tall (half-blocks give
+    2x vertical resolution, which also makes a subpixel roughly square). We take
+    the largest uniform scale that fits, then let the axis with room to spare
+    stretch by at most ``MAX_ASPECT`` before we stop and just centre in the
+    slack. ``None`` if the result would be too small to read.
+    """
+    tw = total_local_width(time_str)
+    sx_max = cols / tw
+    sy_max = (2 * rows) / DH
+    s = min(sx_max, sy_max)
+    if s * DH < _MIN_DIGIT_SUBPX_H or s * DW < _MIN_DIGIT_SUBPX_W:
+        return None
+    sx = min(sx_max, MAX_ASPECT * s)
+    sy = min(sy_max, MAX_ASPECT * s)
+    return sx, sy
+
+
+# --- rendering --------------------------------------------------
+
+_HALFBLOCKS = {(True, True): "█", (True, False): "▀", (False, True): "▄", (False, False): " "}
+
+
+def render_art(time_str: str, rows: int, cols: int, sx: float, sy: float) -> list[str]:
+    """Rasterise the vector clock and pack it into half-block text lines."""
+    pxw, pxh = cols, rows * 2
+    grid = [[False] * pxw for _ in range(pxh)]
+
+    content_w = round(sx * total_local_width(time_str))
+    content_h = round(sy * DH)
+    ox = (pxw - content_w) // 2
+    oy = (pxh - content_h) // 2
+
+    lx = 0.0
+    for i, ch in enumerate(time_str):
+        w = COLON_W if ch == ":" else DW
+        x0 = ox + round(sx * lx)
+        is_colon = ch == ":"
+        value = None if is_colon else int(ch)
+        for Y in range(max(0, oy), min(pxh, oy + content_h)):
+            cy = (Y - oy + 0.5) / sy
+            row = grid[Y]
+            for X in range(max(0, x0), min(pxw, x0 + round(sx * w) + 1)):
+                cx = (X - x0 + 0.5) / sx
+                if colon_ink(cx, cy) if is_colon else digit_ink(value, cx, cy):
+                    row[X] = True
+        lx += w + GAP
+
+    out = []
+    for r in range(rows):
+        top, bot = grid[2 * r], grid[2 * r + 1]
+        out.append("".join(_HALFBLOCKS[(top[c], bot[c])] for c in range(cols)))
+    return out
 
 
 def _render_text(time_str: str, rows: int, cols: int) -> list[str]:
@@ -158,7 +186,7 @@ def render(time_str: str, rows: int, cols: int) -> list[str]:
     rows = max(rows, 0)
     cols = max(cols, 0)
     if choose_mode(rows) == "art":
-        scale = best_pixel_scale(rows, cols, time_str)
+        scale = fit_scale(rows, cols, time_str)
         if scale is not None:
-            return render_matrix(time_str, rows, cols, *scale)
+            return render_art(time_str, rows, cols, *scale)
     return _render_text(time_str, rows, cols)

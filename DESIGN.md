@@ -134,12 +134,42 @@ clamp, scaled-block rendering). Updated the one `test_cli.py` assertion that
 checked for `_`. Run: **44 passed**. Visual checks at 24x80, 40x160, 50x200,
 16x90, 20x120 — bold and legible, block fills the space, aspect kept sane.
 
+### Step 7 — refinement: vector segments + half-block rasteriser (feedback)
+
+Feedback: the 5x7 block-matrix digits read fine when small, but at large sizes
+each "pixel" became a huge square and the digits got hard to read; also asked
+to (a) cap the aspect stretch at 1.5x and centre in the slack beyond that, and
+(b) render the strokes more finely rather than as giant pixels.
+
+New model in `core.py`:
+
+- **Vector seven-segment glyphs.** Each segment is an axis-aligned rectangle in
+  a 100x180 local box: horizontal bars run the full width, vertical bars sit
+  between them with a small `_JOIN` gap so the corners come out clean. The
+  colon is two square dots. `digit_ink()` / `colon_ink()` are simple
+  point-in-rectangle tests — exact, and cheap.
+- **Half-block rasteriser.** `render_art` samples the vector shapes on a
+  `cols` x `2*rows` grid (2x vertical resolution, which also makes a sample
+  cell roughly square) and packs each vertical pair into ` ▀ ▄ █`. Axis-aligned
+  edges keep it crisp at any scale. ~8 ms for a 60x240 frame.
+- **`fit_scale`** replaces the old integer `best_pixel_scale`: largest uniform
+  scale that fits, then the roomy axis may stretch by at most `MAX_ASPECT`
+  (1.5) before we stop and centre. Falls back to text if the digits would come
+  out below a readability floor (`_MIN_DIGIT_SUBPX_*`).
+
+Rewrote `test_core.py` around the new surface (segment ink by digit, the 1.5
+aspect cap across many terminal shapes, uniform-scale case, half-block output,
+centring, text fallback). `test_cli.py` unchanged (`core.BLOCK` still appears
+in big digits). Run: **44 passed**. Visual checks 12x60 … 50x200 — bold, clean
+segments, readable at every size.
+
 ## 5. Final state
 
-- 44 tests, all passing, ~0.03s.
+- 44 tests, all passing, ~0.05s.
 - `core.py` pure and total (returns exact-size grids for any input, including
   degenerate sizes); `cli.py` is the only module that touches the terminal.
-- Big digits: 5x7 block-matrix font; pixel size chosen per-axis to fill the
-  terminal, clamped to a legible aspect band.
-- Known simple choices: the inter-glyph gap is 1 matrix pixel (so it scales
-  with everything else); pixel scaling is discrete (integer `pw`, `ph`).
+- Big digits: vector seven-segment glyphs (rectangular segments), rasterised
+  with half-block characters at whatever scale fits; aspect stretch capped at
+  1.5x, then centred; text fallback below a readability floor.
+- Known simple choices: no anti-aliasing (axis-aligned edges don't need it);
+  the colon dots are squares; glyph geometry constants tuned by eye.
