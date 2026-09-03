@@ -112,10 +112,34 @@ return code `0`, alt-screen entered *and* exited, cursor restored.
 Added `pyproject.toml` (`ssh-clock` console script, pytest `pythonpath`/
 `testpaths`) and `README.md`.
 
+### Step 6 — refinement: readable digits (feedback)
+
+Feedback: the seven-segment line art (`|` and `_`) rendered too thin to read,
+and it wasn't using the horizontal space. Switched approach:
+
+- **5x7 dot-matrix font** for `0`-`9` and `:`, drawn with solid block glyphs
+  (`█`, U+2588) instead of lines. Each matrix pixel is blown up to a `pw` x
+  `ph` rectangle of blocks.
+- `best_pixel_scale(rows, cols, time_str)` now picks `ph` to fill the height
+  and `pw` to fill the width *independently*, then applies a legibility clamp:
+  `pw <= 4*ph` (bold wide strokes are good) and `ph <= 2*pw` (allow vertical
+  stretch so a tall narrow terminal fills its height, but not so far the
+  digits go spindly). A terminal cell is ~2:1 tall:wide, so `pw = 2*ph` is
+  the visually-square reference point.
+- The colon is a real 2x7 glyph (two 2x2 lit blocks), so it scales and stays
+  visible like the digits.
+
+Rewrote `test_core.py` around the new API (font shape, geometry, the scale
+clamp, scaled-block rendering). Updated the one `test_cli.py` assertion that
+checked for `_`. Run: **44 passed**. Visual checks at 24x80, 40x160, 50x200,
+16x90, 20x120 — bold and legible, block fills the space, aspect kept sane.
+
 ## 5. Final state
 
-- 42 tests, all passing, ~0.1s.
+- 44 tests, all passing, ~0.03s.
 - `core.py` pure and total (returns exact-size grids for any input, including
   degenerate sizes); `cli.py` is the only module that touches the terminal.
-- Known simple choices: gap between cells is a constant 1 char (not scaled);
-  colon uses `o` glyphs; scaling is discrete (integer `s`).
+- Big digits: 5x7 block-matrix font; pixel size chosen per-axis to fill the
+  terminal, clamped to a legible aspect band.
+- Known simple choices: the inter-glyph gap is 1 matrix pixel (so it scales
+  with everything else); pixel scaling is discrete (integer `pw`, `ph`).

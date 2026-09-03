@@ -16,9 +16,10 @@ Press **CTRL+C** to quit back to the shell.
 ## Behaviour
 
 - **7 or fewer lines**: a plain text clock, centred.
-- **8+ lines**: large seven-segment digits, scaled to the largest size that
-  fits width and height while keeping the digit aspect ratio. If the window is
-  too narrow for even the smallest art, it falls back to the text clock.
+- **8+ lines**: large digits drawn in a 5x7 block-matrix font. Each "pixel" is
+  scaled up to fill the terminal in both directions (kept within a legible
+  aspect band). If the window is too small for even the smallest matrix, it
+  falls back to the text clock.
 - Resizing the terminal is picked up on the next tick.
 
 ## Develop

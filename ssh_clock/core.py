@@ -2,9 +2,16 @@
 
 Everything here is deterministic and unit-tested. The runtime shell in
 ``cli.py`` supplies the current time and terminal size and paints the result.
+
+Big digits use a **5x7 dot-matrix font** drawn with solid block characters.
+Each matrix "pixel" is blown up to a ``pw`` x ``ph`` rectangle of blocks, and
+``pw`` / ``ph`` are chosen to fill the terminal in both directions (see
+``best_pixel_scale``). This reads far more clearly than thin line art.
 """
 
 from __future__ import annotations
+
+BLOCK = "█"  # full block
 
 # --- time formatting -------------------------------------------------------
 
@@ -15,7 +22,7 @@ def format_time(h: int, m: int, s: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-# --- layout decisions -----------------------------------------------------
+# --- layout decisions ----------------------------------------------------
 
 TEXT_LINE_LIMIT = 7  # "less than seven lines" -> text; 7 stays text too
 
@@ -25,109 +32,75 @@ def choose_mode(rows: int) -> str:
     return "art" if rows > TEXT_LINE_LIMIT else "text"
 
 
-# --- seven-segment geometry ---------------------------------------------
+# --- 5x7 dot-matrix font ----------------------------------------------
 #
-# For a given integer ``scale`` (>= 1):
-#   horizontal segment width  hw = 2 * scale
-#   vertical   segment height vh = 2 * scale   (taller, so digits look like
-#                                               digits rather than squares)
-#   digit cell : width  = hw + 2 , height = 2 * vh + 3
-#   colon cell : width  = COLON_WIDTH , height = same as a digit
-# Cells are separated by a single space. The clock string "hh:mm:ss" is
-# 6 digits + 2 colons + 7 gaps.
+# Each glyph is a list of rows of "0"/"1". Digits are 5 wide, the colon 2 wide;
+# all glyphs are 7 tall. A single blank pixel column separates adjacent glyphs.
 
-COLON_WIDTH = 2
-_GAP = 1
-_N_DIGITS = 6
-_N_COLONS = 2
-_N_GAPS = 7
+GLYPH_H = 7
+DIGIT_W = 5
+COLON_W = 2
+GAP_W = 1
 
-# segments a,b,c,d,e,f,g  (standard 7-seg layout)
-#    aaa
-#   f   b
-#   f   b
-#    ggg
-#   e   c
-#   e   c
-#    ddd
-_SEGMENTS = {
-    0: "abcdef",
-    1: "bc",
-    2: "abged",
-    3: "abgcd",
-    4: "fgbc",
-    5: "afgcd",
-    6: "afgecd",
-    7: "abc",
-    8: "abcdefg",
-    9: "abcdfg",
+_FONT: dict[str, list[str]] = {
+    "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+    "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+    "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+    "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+    "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+    "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+    "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
+    "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+    "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+    "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
+    ":": ["00", "11", "11", "00", "11", "11", "00"],
 }
 
 
-def digit_width(scale: int) -> int:
-    return 2 * scale + 2
+def glyph_pixels(ch: str) -> list[str]:
+    """The raw 0/1 matrix for a single character (``0``-``9`` or ``:``)."""
+    try:
+        return _FONT[ch]
+    except KeyError:
+        raise ValueError(f"no glyph for {ch!r}") from None
 
 
-def block_height(scale: int) -> int:
-    return 4 * scale + 3
+def _glyph_width(ch: str) -> int:
+    return COLON_W if ch == ":" else DIGIT_W
 
 
-def block_width(scale: int) -> int:
-    return (
-        _N_DIGITS * digit_width(scale)
-        + _N_COLONS * COLON_WIDTH
-        + _N_GAPS * _GAP
-    )
+# --- geometry ----------------------------------------------------------
+
+def block_pixel_size(time_str: str) -> tuple[int, int]:
+    """Size of the whole clock, measured in matrix pixels: ``(width, height)``."""
+    width = sum(_glyph_width(c) for c in time_str)
+    width += GAP_W * (len(time_str) - 1)
+    return width, GLYPH_H
 
 
-def best_scale(rows: int, cols: int) -> int | None:
-    """Largest ``scale`` whose full clock block fits in ``rows`` x ``cols``.
+def best_pixel_scale(rows: int, cols: int, time_str: str) -> tuple[int, int] | None:
+    """Pixel dimensions ``(pw, ph)`` for the biggest legible clock that fits.
 
-    ``None`` when even ``scale == 1`` does not fit.
+    ``ph`` fills the available height, ``pw`` fills the available width, so the
+    digits use the whole terminal. A legibility clamp then keeps the pixels in
+    a sane aspect band: a terminal cell is roughly twice as tall as it is wide,
+    so ``pw == 2*ph`` looks visually square. We allow bold, wide pixels (up to
+    ``pw == 4*ph``) because fatter strokes read better, and let a pixel stretch
+    up to ``ph == 2*pw`` vertically so a tall, narrow terminal still fills its
+    height — but no further, or the digits get spindly. Returns ``None`` if not
+    even 1x1 pixels fit.
     """
-    s = 0
-    while block_width(s + 1) <= cols and block_height(s + 1) <= rows:
-        s += 1
-    return s or None
+    wp, hp = block_pixel_size(time_str)
+    ph = rows // hp
+    pw = cols // wp
+    if ph < 1 or pw < 1:
+        return None
+    pw = min(pw, 4 * ph)
+    ph = min(ph, 2 * pw)
+    return pw, ph
 
 
-def seven_segment_digit(d: int, scale: int) -> list[str]:
-    """Render digit ``d`` as a list of equal-length strings."""
-    if d not in _SEGMENTS:
-        raise ValueError(f"not a single digit: {d}")
-    on = set(_SEGMENTS[d])
-    hw, vh = 2 * scale, 2 * scale
-    w = digit_width(scale)
-
-    def hbar(seg: str) -> str:
-        return " " + (("_" * hw) if seg in on else (" " * hw)) + " "
-
-    def vrow(left: str, right: str) -> str:
-        lc = "|" if left in on else " "
-        rc = "|" if right in on else " "
-        return lc + (" " * hw) + rc
-
-    rows = [hbar("a")]
-    rows += [vrow("f", "b") for _ in range(vh)]
-    rows.append(hbar("g"))
-    rows += [vrow("e", "c") for _ in range(vh)]
-    rows.append(hbar("d"))
-    assert all(len(r) == w for r in rows)
-    assert len(rows) == block_height(scale)
-    return rows
-
-
-def colon_cell(scale: int) -> list[str]:
-    """Two dots, at roughly 1/3 and 2/3 of the cell height."""
-    h = block_height(scale)
-    top = h // 3
-    bottom = h - 1 - h // 3
-    dot = "o".center(COLON_WIDTH)
-    blank = " " * COLON_WIDTH
-    return [dot if i in (top, bottom) else blank for i in range(h)]
-
-
-# --- full-screen render -------------------------------------------------
+# --- rendering -------------------------------------------------------
 
 def _blank_grid(rows: int, cols: int) -> list[list[str]]:
     return [[" "] * cols for _ in range(rows)]
@@ -137,10 +110,39 @@ def _place(grid, block: list[str], top: int, left: int) -> None:
     for r, line in enumerate(block):
         gr = top + r
         if 0 <= gr < len(grid):
+            row = grid[gr]
             for c, ch in enumerate(line):
                 gc = left + c
-                if 0 <= gc < len(grid[0]):
-                    grid[gr][gc] = ch
+                if 0 <= gc < len(row):
+                    row[gc] = ch
+
+
+def _pixel_grid(time_str: str) -> list[str]:
+    """Compose the glyphs into one 0/1 pixel grid, ``GLYPH_H`` rows tall."""
+    rows = ["" for _ in range(GLYPH_H)]
+    for i, ch in enumerate(time_str):
+        if i:
+            for r in range(GLYPH_H):
+                rows[r] += "0" * GAP_W
+        g = glyph_pixels(ch)
+        for r in range(GLYPH_H):
+            rows[r] += g[r]
+    return rows
+
+
+def render_matrix(time_str: str, rows: int, cols: int, pw: int, ph: int) -> list[str]:
+    """Draw ``time_str`` as block digits with ``pw`` x ``ph`` pixels, centred."""
+    pixels = _pixel_grid(time_str)
+    block = [
+        "".join((BLOCK if bit == "1" else " ") * pw for bit in prow)
+        for prow in pixels
+        for _ in range(ph)
+    ]
+    bw = len(block[0]) if block else 0
+    bh = len(block)
+    grid = _blank_grid(rows, cols)
+    _place(grid, block, (rows - bh) // 2, (cols - bw) // 2)
+    return ["".join(r) for r in grid]
 
 
 def _render_text(time_str: str, rows: int, cols: int) -> list[str]:
@@ -151,34 +153,12 @@ def _render_text(time_str: str, rows: int, cols: int) -> list[str]:
     return grid
 
 
-def _render_art(time_str: str, rows: int, cols: int, scale: int) -> list[str]:
-    cells: list[list[str]] = []
-    for ch in time_str:
-        if ch == ":":
-            cells.append(colon_cell(scale))
-        else:
-            cells.append(seven_segment_digit(int(ch), scale))
-
-    bw, bh = block_width(scale), block_height(scale)
-    grid = _blank_grid(rows, cols)
-    top = (rows - bh) // 2
-    left = (cols - bw) // 2
-
-    x = left
-    for i, cell in enumerate(cells):
-        _place(grid, cell, top, x)
-        x += len(cell[0])
-        if i != len(cells) - 1:
-            x += _GAP
-    return ["".join(r) for r in grid]
-
-
 def render(time_str: str, rows: int, cols: int) -> list[str]:
     """Return exactly ``rows`` lines of exactly ``cols`` chars."""
     rows = max(rows, 0)
     cols = max(cols, 0)
     if choose_mode(rows) == "art":
-        scale = best_scale(rows, cols)
+        scale = best_pixel_scale(rows, cols, time_str)
         if scale is not None:
-            return _render_art(time_str, rows, cols, scale)
+            return render_matrix(time_str, rows, cols, *scale)
     return _render_text(time_str, rows, cols)

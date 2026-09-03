@@ -3,7 +3,7 @@
 import io
 import time as _time
 
-from ssh_clock import cli
+from ssh_clock import cli, core
 
 
 class TestFrameFor:
@@ -16,7 +16,7 @@ class TestFrameFor:
     def test_art_for_tall_terminal(self):
         t = _time.struct_time((2026, 9, 3, 1, 2, 3, 0, 0, -1))
         frame = cli.frame_for(t, cols=120, rows=20)
-        assert "_" in "\n".join(frame)
+        assert core.BLOCK in "\n".join(frame)
 
 
 class TestPaint:
