@@ -16,13 +16,13 @@ Press **CTRL+C** to quit back to the shell.
 ## Behaviour
 
 - **7 or fewer lines**: a plain text clock, centred.
-- **8+ lines**: large segmented-display digits (Geascript-style), drawn from a
-  vector model and rasterised with ordinary Unicode block and triangle
-  characters (`█ ▀ ▄ ▌ ▐ ▖▗▘▝ … ◤◥◣◢`) so the diagonal chamfers render cleanly
-  in any standard terminal font. They scale to fill the window; the digits'
-  aspect ratio is kept within 1.5x before it stops stretching and centres in
-  the extra space. If the window is too small for a readable clock, it falls
-  back to the text version.
+- **8+ lines**: large segmented-display digits built from a seven-segment
+  bitmap font with 45-degree chamfered corners. They are drawn using only the
+  full block `█` and the four solid triangles `◤ ◥ ◣ ◢` — glyphs every standard
+  terminal font renders with matching metrics — so the digits stay crisp at any
+  size. They scale by whole steps to fill the window (each axis stretched by at
+  most 1.5x before the rest becomes centring margin). If the window is too
+  small for a readable clock, it falls back to the text version.
 - Resizing the terminal is picked up on the next tick.
 
 ## Develop

@@ -5,18 +5,16 @@ Everything here is deterministic and unit-tested. The runtime shell in
 
 Big digits
 ----------
-The digits use a *segmented-display* vector model in the spirit of Geascript:
-seven thick segments with 45-degree chamfered ends that butt together along
-their diagonals, so a digit is one connected shape.
+Digits are a seven-segment design on a small integer grid. Every grid cell is
+one of six states -- empty, full (``█``), or one of the four 45-degree triangles
+``◤ ◥ ◣ ◢`` -- and convex corners are chamfered by exactly one cell, which is
+what gives the segmented-display look.
 
-The shapes are then rasterised with a **best-fit glyph match**. Every candidate
-glyph carries a 6x6 coverage bitmap; for each character cell we sample the
-vector model on a 6x6 grid and emit whichever candidate's bitmap is closest.
-The candidate set is deliberately limited to glyphs that render consistently in
-almost every terminal font: space, the full/half/eighth **block** elements, the
-ten **quadrants**, and the four solid **triangles** ``◤ ◥ ◣ ◢``. Diagonals snap
-to the triangles, thin strokes to the eighth-blocks, so the forms stay legible
-from a few rows tall up to full-screen.
+To draw, each design cell is expanded to an ``nx`` x ``ny`` block of characters:
+empty and full cells tile trivially, and a triangle cell tiles into a clean
+right triangle of full blocks with a single row of triangle glyphs on the
+hypotenuse. Because the scale factors are integers this never produces ragged
+or half-lit edges -- only ``█`` and the four triangles ever appear.
 """
 
 from __future__ import annotations
@@ -24,8 +22,9 @@ from __future__ import annotations
 from functools import lru_cache
 
 BLOCK = "█"
+_TRI = {"F": "◤", "J": "◢", "L": "◣", "P": "◥"}  # design char -> glyph
 
-# --- time formatting ------------------------------------------------
+# --- time formatting ----------------------------------------------
 
 def format_time(h: int, m: int, s: int) -> str:
     """Return ``hh:mm:ss`` (zero-padded, 24-hour)."""
@@ -34,9 +33,9 @@ def format_time(h: int, m: int, s: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-# --- layout decision ----------------------------------------------
+# --- layout decision --------------------------------------------
 
-TEXT_LINE_LIMIT = 7  # "less than seven lines" -> text; 7 stays text too
+TEXT_LINE_LIMIT = 7
 
 
 def choose_mode(rows: int) -> str:
@@ -44,308 +43,187 @@ def choose_mode(rows: int) -> str:
     return "art" if rows > TEXT_LINE_LIMIT else "text"
 
 
-# --- segmented-display vector model ------------------------------
-#
-# A digit lives in a DW x DH local box; a colon in a COLON_W x DH box.
-# Segments are chamfered hexagons that share edges where they meet.
-
-DW = 100.0
-DH = 180.0
-COLON_W = 34.0
-GAP = 7.0
-
-_T = 11.0          # half-thickness of a segment
-_CH = 11.0         # chamfer (== _T -> 45 degrees)
-_MARGIN = 8.0
-
-_XL = _MARGIN + _T
-_XR = DW - _MARGIN - _T
-_YT = _MARGIN + _T
-_YB = DH - _MARGIN - _T
-_YM = DH / 2.0
-
-
-def _hseg(yc: float):
-    return [
-        (_XL, yc), (_XL + _CH, yc - _T), (_XR - _CH, yc - _T),
-        (_XR, yc), (_XR - _CH, yc + _T), (_XL + _CH, yc + _T),
-    ]
-
-
-def _vseg(xc: float, ya: float, yb: float):
-    return [
-        (xc, ya), (xc + _T, ya + _CH), (xc + _T, yb - _CH),
-        (xc, yb), (xc - _T, yb - _CH), (xc - _T, ya + _CH),
-    ]
-
-
-def _bbox(poly):
-    xs = [p[0] for p in poly]
-    ys = [p[1] for p in poly]
-    return (min(xs), min(ys), max(xs), max(ys))
-
-
-_SEG_POLY = {
-    "a": _hseg(_YT), "g": _hseg(_YM), "d": _hseg(_YB),
-    "f": _vseg(_XL, _YT, _YM), "b": _vseg(_XR, _YT, _YM),
-    "e": _vseg(_XL, _YM, _YB), "c": _vseg(_XR, _YM, _YB),
-}
-_SEG = {k: (v, _bbox(v)) for k, v in _SEG_POLY.items()}
+# --- seven-segment design grid --------------------------------
 
 _DIGIT_SEGMENTS = {
-    0: "abcdef", 1: "bc", 2: "abdeg", 3: "abcdg", 4: "bcfg",
-    5: "acdfg", 6: "acdefg", 7: "abc", 8: "abcdefg", 9: "abcdfg",
+    0: "ABCDEF", 1: "BC", 2: "ABGED", 3: "ABGCD", 4: "FGBC",
+    5: "AFGCD", 6: "AFGCDE", 7: "ABC", 8: "ABCDEFG", 9: "ABCDFG",
 }
 
-_COLON_CX = COLON_W / 2.0
-_COLON_R = 12.0
-_COLON_YS = (DH * 0.34, DH * 0.66)
+
+def _segment_rects(w: int, h: int, t: int):
+    hg = (h - t) // 2
+    return {
+        "A": (0, w, 0, t),
+        "D": (0, w, h - t, h),
+        "G": (0, w, hg, hg + t),
+        "F": (0, t, 0, hg + t),
+        "B": (w - t, w, 0, hg + t),
+        "E": (0, t, hg, h),
+        "C": (w - t, w, hg, h),
+    }
 
 
-def _octagon(cx: float, cy: float, r: float):
-    s = r * 0.4142
-    return [
-        (cx - r, cy - s), (cx - s, cy - r), (cx + s, cy - r), (cx + r, cy - s),
-        (cx + r, cy + s), (cx + s, cy + r), (cx - s, cy + r), (cx - r, cy + s),
-    ]
+def _chamfer(grid, w: int, h: int):
+    """Grid of bools -> rows of design chars, convex corners cut by one cell."""
+
+    def on(x, y):
+        return 0 <= x < w and 0 <= y < h and grid[y][x]
+
+    out = [["█" if grid[y][x] else " " for x in range(w)] for y in range(h)]
+    for y in range(h):
+        for x in range(w):
+            if not grid[y][x]:
+                continue
+            up, dn = not on(x, y - 1), not on(x, y + 1)
+            lf, rt = not on(x - 1, y), not on(x + 1, y)
+            if up and rt and not on(x + 1, y - 1) and on(x, y + 1) and on(x - 1, y):
+                out[y][x] = "L"   # cut top-right, keep ◣
+            elif up and lf and not on(x - 1, y - 1) and on(x, y + 1) and on(x + 1, y):
+                out[y][x] = "J"   # cut top-left, keep ◢
+            elif dn and rt and not on(x + 1, y + 1) and on(x, y - 1) and on(x - 1, y):
+                out[y][x] = "F"   # cut bottom-right, keep ◤
+            elif dn and lf and not on(x - 1, y + 1) and on(x, y - 1) and on(x + 1, y):
+                out[y][x] = "P"   # cut bottom-left, keep ◥
+    return ["".join(r) for r in out]
 
 
-_COLON_POLYS = [
-    (p, _bbox(p)) for p in (_octagon(_COLON_CX, y, _COLON_R) for y in _COLON_YS)
-]
+def _colon_bitmap(w: int, h: int):
+    grid = [[False] * w for _ in range(h)]
+    dot_h = 3 if h >= 9 else 2
+    for y0 in (1, h - 1 - dot_h):            # two dots with a gap between
+        for y in range(y0, y0 + dot_h):
+            for x in range(w):
+                grid[y][x] = True
+    return _chamfer(grid, w, h)
 
 
-def _in_convex(x: float, y: float, poly, bbox) -> bool:
-    x0, y0, x1, y1 = bbox
-    if x < x0 or x > x1 or y < y0 or y > y1:
-        return False
-    sign = 0
-    n = len(poly)
-    for i in range(n):
-        ax, ay = poly[i]
-        bx, by = poly[(i + 1) % n]
-        cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
-        if cross < -1e-9:
-            if sign > 0:
-                return False
-            sign = -1
-        elif cross > 1e-9:
-            if sign < 0:
-                return False
-            sign = 1
-    return True
+class Font:
+    """A digit design at one grid size."""
+
+    def __init__(self, w: int, h: int, t: int):
+        self.w, self.h, self.t = w, h, t
+        self.colon_w = max(3, round(w * 0.34))
+        self.gap = max(1, round(w * 0.12))
+        rects = _segment_rects(w, h, t)
+        self.digits = {}
+        for value, segs in _DIGIT_SEGMENTS.items():
+            grid = [[False] * w for _ in range(h)]
+            for s in segs:
+                x0, x1, y0, y1 = rects[s]
+                for yy in range(y0, y1):
+                    for xx in range(x0, x1):
+                        grid[yy][xx] = True
+            self.digits[value] = _chamfer(grid, w, h)
+        self.colon = _colon_bitmap(self.colon_w, h)
+
+    def cell_width(self, ch: str) -> int:
+        return self.colon_w if ch == ":" else self.w
+
+    def bitmap(self, ch: str):
+        return self.colon if ch == ":" else self.digits[int(ch)]
 
 
-def digit_ink(value: int, x: float, y: float) -> bool:
-    """Is local point ``(x, y)`` inside digit ``value``'s lit segments?"""
-    for name in _DIGIT_SEGMENTS[value]:
-        poly, bbox = _SEG[name]
-        if _in_convex(x, y, poly, bbox):
-            return True
-    return False
+_FONTS = [Font(10, 10, 2), Font(7, 7, 1)]  # try large first, then small
 
 
-def colon_ink(x: float, y: float) -> bool:
-    """Is local point ``(x, y)`` inside either colon dot?"""
-    for poly, bbox in _COLON_POLYS:
-        if _in_convex(x, y, poly, bbox):
-            return True
-    return False
-
-
-# --- candidate glyph library ------------------------------------
-#
-# Each candidate has a 6x6 coverage bitmap (bit = row*6 + col). At render time
-# we pick the candidate whose bitmap is the closest match (fewest differing
-# cells) to the sampled cell.
-
-_SS = 6
-
-
-def _mask_from_fn(fn) -> int:
-    m = 0
-    for j in range(_SS):
-        for i in range(_SS):
-            if fn((i + 0.5) / _SS, (j + 0.5) / _SS):
-                m |= 1 << (j * _SS + i)
-    return m
-
-
-def _build_candidates():
-    cands: list[tuple[str, int]] = []
-
-    def add(ch, fn):
-        cands.append((ch, _mask_from_fn(fn)))
-
-    add(" ", lambda x, y: False)
-    add("█", lambda x, y: True)
-    add("▀", lambda x, y: y < 0.5)
-    add("▄", lambda x, y: y >= 0.5)
-    add("▌", lambda x, y: x < 0.5)
-    add("▐", lambda x, y: x >= 0.5)
-    # eighth blocks -- let thin strokes land precisely
-    for k in range(1, 8):
-        add(chr(0x2580 + k), lambda x, y, k=k: y >= 1 - k / 8)   # ▁..▇
-        add(chr(0x2588 + k), lambda x, y, k=k: x < 1 - k / 8)    # ▉..▏
-    add("▔", lambda x, y: y < 1 / 8)
-    add("▕", lambda x, y: x >= 7 / 8)
-    # quadrants
-    add("▘", lambda x, y: x < 0.5 and y < 0.5)
-    add("▝", lambda x, y: x >= 0.5 and y < 0.5)
-    add("▖", lambda x, y: x < 0.5 and y >= 0.5)
-    add("▗", lambda x, y: x >= 0.5 and y >= 0.5)
-    add("▚", lambda x, y: (x < 0.5) == (y < 0.5))
-    add("▞", lambda x, y: (x < 0.5) != (y < 0.5))
-    add("▛", lambda x, y: not (x >= 0.5 and y >= 0.5))
-    add("▜", lambda x, y: not (x < 0.5 and y >= 0.5))
-    add("▙", lambda x, y: not (x >= 0.5 and y < 0.5))
-    add("▟", lambda x, y: not (x < 0.5 and y < 0.5))
-    # solid triangles -- real diagonals
-    add("◤", lambda x, y: x + y <= 1)
-    add("◥", lambda x, y: y <= x)
-    add("◣", lambda x, y: y >= x)
-    add("◢", lambda x, y: x + y >= 1)
-    return cands
-
-
-_CANDIDATES = _build_candidates()
-_MATCH_CACHE: dict[int, str] = {}
-
-
-def _match_char(mask: int) -> str:
-    hit = _MATCH_CACHE.get(mask)
-    if hit is not None:
-        return hit
-    best, best_d = " ", 99
-    for ch, cm in _CANDIDATES:
-        d = (mask ^ cm).bit_count()
-        if d < best_d:
-            best, best_d = ch, d
-            if d == 0:
-                break
-    _MATCH_CACHE[mask] = best
-    return best
-
-
-# --- sizing --------------------------------------------------
-
-MAX_ASPECT = 1.5
-_MIN_VH = 13.0   # rendered digit must be at least this tall (visual units)
-_MIN_VW = 8.0
-
-
-def total_local_width(time_str: str) -> float:
-    w = 0.0
+def total_grid_width(font: "Font", time_str: str) -> int:
+    w = 0
     for i, ch in enumerate(time_str):
         if i:
-            w += GAP
-        w += COLON_W if ch == ":" else DW
+            w += font.gap
+        w += font.cell_width(ch)
     return w
 
 
-def fit_scale(rows: int, cols: int, time_str: str = "12:34:56") -> tuple[float, float] | None:
-    """Scale (local units -> visual units) for x and y.
+# --- fitting ----------------------------------------------------
 
-    A character cell is 1 visual unit wide and 2 tall, so the canvas is ``cols``
-    x ``2*rows`` visual units. Take the largest uniform scale that fits, then
-    let the roomy axis stretch by at most ``MAX_ASPECT`` before stopping (the
-    surplus becomes centring margin). ``None`` if it would be too small to read.
+MAX_ASPECT = 1.5
+
+
+def fit(rows: int, cols: int, time_str: str = "12:34:56"):
+    """Pick ``(font, nx, ny)`` -- the largest design that fits ``rows`` x ``cols``.
+
+    ``nx`` / ``ny`` are the integer character size of one design cell. A cell is
+    visually square at ``nx == 2*ny`` (character cells are twice as tall as
+    wide); we start there and let the roomier axis stretch by up to
+    ``MAX_ASPECT`` before stopping (surplus becomes centring margin). ``None``
+    if not even the small font fits at 1x.
     """
-    tw = total_local_width(time_str)
-    k = min(cols / tw, (2 * rows) / DH)
-    if k * DH < _MIN_VH or k * DW < _MIN_VW:
-        return None
-    kx = min(cols / tw, MAX_ASPECT * k)
-    ky = min((2 * rows) / DH, MAX_ASPECT * k)
-    return kx, ky
+    for font in _FONTS:
+        wtot = total_grid_width(font, time_str)
+        s_h = rows // font.h
+        s_w = cols // wtot
+        s = min(s_h, s_w)
+        if s < 1:
+            continue
+        # use slack on either axis, but stretch each by at most MAX_ASPECT
+        cap = int(s * MAX_ASPECT)
+        nx = min(s_w, cap)
+        ny = min(s_h, cap)
+        return font, nx, ny
+    return None
 
 
-# --- rendering ----------------------------------------------
+# --- rendering -------------------------------------------------
 
-def _layout(time_str: str):
-    x = 0.0
-    cells = []
-    for i, ch in enumerate(time_str):
-        if i:
-            x += GAP
-        if ch == ":":
-            cells.append((True, 0, x, x + COLON_W))
-            x += COLON_W
-        else:
-            cells.append((False, int(ch), x, x + DW))
-            x += DW
-    return cells
+_SUB = 4  # sub-samples per axis when rasterising a triangle cell
 
 
-def _any_hit(polys, x: float, y: float) -> bool:
-    for poly, bbox in polys:
-        if _in_convex(x, y, poly, bbox):
-            return True
-    return False
+def _solid(ch: str, u: float, v: float) -> bool:
+    if ch == "F":       # ◤ upper-left
+        return u + v <= 1.0
+    if ch == "J":       # ◢ lower-right
+        return u + v >= 1.0
+    if ch == "P":       # ◥ upper-right
+        return v <= u
+    return v >= u       # ◣ lower-left
 
 
-def render_art(time_str: str, rows: int, cols: int, kx: float, ky: float) -> list[str]:
-    cells = _layout(time_str)
-    tw = total_local_width(time_str)
-    ox = (cols - kx * tw) / 2.0
-    oy = (2 * rows - ky * DH) / 2.0
-    inv_kx, inv_ky = 1.0 / kx, 1.0 / ky
-    step = 1.0 / _SS
+@lru_cache(maxsize=512)
+def _expand(ch: str, nx: int, ny: int) -> tuple[str, ...]:
+    if ch == " ":
+        return (" " * nx,) * ny
+    if ch == "█":
+        return ("█" * nx,) * ny
+    glyph = _TRI[ch]
+    hi = _SUB * _SUB * 3 // 4
+    lo = _SUB * _SUB // 4
+    rows = []
+    for i in range(ny):
+        line = []
+        for j in range(nx):
+            cover = sum(
+                _solid(ch, (j + (sx + 0.5) / _SUB) / nx, (i + (sy + 0.5) / _SUB) / ny)
+                for sx in range(_SUB) for sy in range(_SUB)
+            )
+            line.append("█" if cover >= hi else " " if cover <= lo else glyph)
+        rows.append("".join(line))
+    return tuple(rows)
 
-    sx_off = [(i + 0.5) * step for i in range(_SS)]
-    sy_off = [(j + 0.5) * (2.0 * step) for j in range(_SS)]
-    probe = (0, _SS // 2, _SS - 1)
 
-    # Resolve each output column to the glyph cell under its centre once, and
-    # carry that cell's segment polygons + local x offset.
-    col_polys: list = [None] * cols
-    col_x0: list[float] = [0.0] * cols
-    for c in range(cols):
-        lxm = (c + 0.5 - ox) * inv_kx
-        for is_colon, value, x0, x1 in cells:
-            if x0 <= lxm < x1:
-                col_polys[c] = (
-                    _COLON_POLYS if is_colon
-                    else [_SEG[n] for n in _DIGIT_SEGMENTS[value]]
-                )
-                col_x0[c] = x0
-                break
-
+def _render_glyph(bitmap, nx: int, ny: int) -> list[str]:
     out = []
-    for r in range(rows):
-        chars = []
-        top = 2 * r
-        ly_row = [(top + dy - oy) * inv_ky for dy in sy_off]
-        for c in range(cols):
-            polys = col_polys[c]
-            if polys is None:
-                chars.append(" ")
-                continue
-            x0 = col_x0[c]
-            lx_col = [(c + dx - ox) * inv_kx - x0 for dx in sx_off]
-            hits = [
-                _any_hit(polys, lx_col[i], ly_row[j])
-                for i in probe for j in probe
-            ]
-            if not any(hits):
-                chars.append(" ")
-                continue
-            if all(hits):
-                chars.append("█")
-                continue
-            mask = 0
-            bit = 0
-            for ly in ly_row:
-                if 0.0 <= ly <= DH:
-                    for lx in lx_col:
-                        if _any_hit(polys, lx, ly):
-                            mask |= 1 << bit
-                        bit += 1
-                else:
-                    bit += _SS
-            chars.append(" " if mask == 0 else _match_char(mask))
-        out.append("".join(chars))
+    for design_row in bitmap:
+        pieces = [_expand(c, nx, ny) for c in design_row]
+        for k in range(ny):
+            out.append("".join(p[k] for p in pieces))
     return out
+
+
+def render_art(time_str: str, rows: int, cols: int, font: "Font", nx: int, ny: int) -> list[str]:
+    blocks = [_render_glyph(font.bitmap(ch), nx, ny) for ch in time_str]
+    gap = " " * (font.gap * nx)
+    body = [gap.join(parts) for parts in zip(*blocks)]
+    bw = len(body[0]) if body else 0
+    left = max(0, (cols - bw) // 2)
+    top = max(0, (rows - len(body)) // 2)
+
+    grid = [" " * cols for _ in range(rows)]
+    for i, line in enumerate(body):
+        if 0 <= top + i < rows:
+            grid[top + i] = (" " * left + line)[:cols].ljust(cols)
+    return grid
 
 
 def _render_text(time_str: str, rows: int, cols: int) -> list[str]:
@@ -356,15 +234,11 @@ def _render_text(time_str: str, rows: int, cols: int) -> list[str]:
     return grid
 
 
-@lru_cache(maxsize=16)
-def _render_cached(time_str: str, rows: int, cols: int) -> tuple[str, ...]:
-    if choose_mode(rows) == "art":
-        scale = fit_scale(rows, cols, time_str)
-        if scale is not None:
-            return tuple(render_art(time_str, rows, cols, *scale))
-    return tuple(_render_text(time_str, rows, cols))
-
-
 def render(time_str: str, rows: int, cols: int) -> list[str]:
     """Return exactly ``rows`` lines of exactly ``cols`` chars."""
-    return list(_render_cached(time_str, max(rows, 0), max(cols, 0)))
+    rows, cols = max(rows, 0), max(cols, 0)
+    if choose_mode(rows) == "art":
+        picked = fit(rows, cols, time_str)
+        if picked is not None:
+            return render_art(time_str, rows, cols, *picked)
+    return _render_text(time_str, rows, cols)

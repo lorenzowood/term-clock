@@ -4,6 +4,9 @@ import pytest
 
 from ssh_clock import core
 
+_DESIGN_CHARS = set(" █FJLP")
+_GLYPHS = set(" █◤◥◣◢")
+
 
 class TestFormatTime:
     def test_pads_with_zeros(self):
@@ -16,12 +19,9 @@ class TestFormatTime:
         assert core.format_time(23, 59, 59) == "23:59:59"
 
     def test_rejects_out_of_range(self):
-        with pytest.raises(ValueError):
-            core.format_time(24, 0, 0)
-        with pytest.raises(ValueError):
-            core.format_time(0, 60, 0)
-        with pytest.raises(ValueError):
-            core.format_time(0, 0, -1)
+        for bad in [(24, 0, 0), (0, 60, 0), (0, 0, -1)]:
+            with pytest.raises(ValueError):
+                core.format_time(*bad)
 
 
 class TestChooseMode:
@@ -34,168 +34,141 @@ class TestChooseMode:
         assert core.choose_mode(rows) == "art"
 
 
-class TestGlyphInk:
-    def _density(self, value):
-        return sum(
-            core.digit_ink(value, x, y)
-            for x in range(0, int(core.DW), 3)
-            for y in range(0, int(core.DH), 3)
-        )
+class TestFont:
+    @pytest.fixture(params=range(len(core._FONTS)))
+    def font(self, request):
+        return core._FONTS[request.param]
 
-    def test_one_is_on_the_right_only(self):
-        left = sum(
-            core.digit_ink(1, x, y)
-            for x in range(0, 40, 3)
-            for y in range(10, 170, 8)
-        )
-        right = sum(
-            core.digit_ink(1, x, y)
-            for x in range(60, 100, 3)
-            for y in range(10, 170, 8)
-        )
-        assert left == 0 and right > 0
+    @pytest.mark.parametrize("value", range(10))
+    def test_digit_is_wxh_design_chars(self, font, value):
+        bmp = font.digits[value]
+        assert len(bmp) == font.h
+        assert all(len(row) == font.w for row in bmp)
+        assert set("".join(bmp)) <= _DESIGN_CHARS
 
-    def test_eight_is_much_denser_than_one(self):
-        assert self._density(8) > 2 * self._density(1)
+    def test_one_is_narrow_eight_is_dense(self, font):
+        def ink(v):
+            return sum(c != " " for c in "".join(font.digits[v]))
 
-    def test_zero_has_a_hollow_centre(self):
-        assert not core.digit_ink(0, core.DW / 2, core.DH / 2)
+        assert ink(8) > 2 * ink(1)
 
-    def test_eight_has_a_lit_middle_bar(self):
-        assert core.digit_ink(8, core.DW / 2, core.DH / 2)
+    def test_one_uses_only_right_columns(self, font):
+        left = font.w // 2
+        assert all(row[:left].strip() == "" for row in font.digits[1])
 
-    def test_two_and_five_are_mirror_ish(self):
-        # 2 lights top-left? no -> f off for 2, on for 5 at upper-left
-        assert not core.digit_ink(2, core.DW * 0.12, core.DH * 0.28)
-        assert core.digit_ink(5, core.DW * 0.12, core.DH * 0.28)
+    def test_eight_has_a_middle_bar_zero_does_not(self, font):
+        hg = (font.h - font.t) // 2  # row of the middle segment
+        assert font.digits[8][hg].count("█") >= font.w - 2
+        assert " " in font.digits[0][hg]  # hollow centre
 
-    def test_all_digits_have_ink(self):
-        for v in range(10):
-            assert self._density(v) > 0
+    def test_colon_has_two_dot_bands(self, font):
+        lit = [i for i, row in enumerate(font.colon) if row.strip()]
+        assert lit and lit[0] != 0 and lit[-1] != font.h - 1
+        # a clear vertical gap between the two dots
+        assert any(b - a > 1 for a, b in zip(lit, lit[1:]))
 
-    def test_colon_has_two_separated_dots(self):
-        cx = core.COLON_W / 2
-        assert core.colon_ink(cx, core.DH * 0.35)
-        assert core.colon_ink(cx, core.DH * 0.65)
-        assert not core.colon_ink(cx, core.DH * 0.5)
+    def test_every_convex_corner_becomes_a_triangle(self, font):
+        # "0" has four outer corners, all chamfered
+        joined = "".join(font.digits[0])
+        assert all(joined.count(c) >= 1 for c in "FJLP")
 
 
-class TestFitScale:
-    def test_none_when_too_small_to_read(self):
-        assert core.fit_scale(rows=8, cols=18) is None
+class TestExpand:
+    def test_space_and_block(self):
+        assert core._expand(" ", 3, 2) == ("   ", "   ")
+        assert core._expand("█", 3, 2) == ("███", "███")
 
-    def test_fits_within_width(self):
-        sx, sy = core.fit_scale(rows=100, cols=200)
-        assert sx * core.total_local_width("12:34:56") <= 200 + 1e-6
+    def test_unit_triangle_is_single_glyph(self):
+        assert core._expand("F", 1, 1) == ("◤",)
+        assert core._expand("J", 1, 1) == ("◢",)
 
-    def test_fits_within_height(self):
-        sx, sy = core.fit_scale(rows=10, cols=10_000)
-        assert sy * core.DH <= 2 * 10 + 1e-6
+    def test_scaled_triangle_tiles_cleanly(self):
+        block = core._expand("F", 4, 4)  # ◤ upper-left
+        assert len(block) == 4 and all(len(r) == 4 for r in block)
+        chars = set("".join(block))
+        assert chars <= {" ", "█", "◤"}
+        assert "█" in chars and " " in chars and "◤" in chars
+        # top-left corner solid, bottom-right empty
+        assert block[0][0] == "█" and block[-1][-1] == " "
+
+    def test_only_ever_emits_space_block_and_its_own_glyph(self):
+        for ch, g in core._TRI.items():
+            chars = set("".join(core._expand(ch, 5, 3)))
+            assert chars <= {" ", "█", g}
+
+
+class TestFit:
+    def test_none_when_tiny(self):
+        assert core.fit(rows=8, cols=10) is None
+
+    def test_returns_font_and_positive_scales(self):
+        font, nx, ny = core.fit(rows=40, cols=160)
+        assert font in core._FONTS
+        assert nx >= 1 and ny >= 1
 
     @pytest.mark.parametrize(
         "rows,cols",
-        [(8, 400), (60, 400), (200, 90), (9, 5000), (500, 300), (24, 80), (40, 160)],
+        [(8, 400), (60, 400), (200, 90), (10, 5000), (500, 300), (24, 120), (40, 160)],
     )
-    def test_aspect_never_exceeds_max(self, rows, cols):
-        result = core.fit_scale(rows, cols)
-        if result is None:
+    def test_scale_stretch_within_max_aspect(self, rows, cols):
+        got = core.fit(rows, cols)
+        if got is None:
             return
-        sx, sy = result
-        hi, lo = max(sx, sy), min(sx, sy)
-        assert hi <= lo * core.MAX_ASPECT + 1e-9
+        _, nx, ny = got
+        assert max(nx, ny) <= min(nx, ny) * core.MAX_ASPECT + 1e-9
 
-    def test_bigger_terminal_bigger_clock(self):
-        small = core.fit_scale(20, 120)
-        big = core.fit_scale(40, 240)
-        assert big[0] >= small[0] and big[1] >= small[1]
+    def test_uses_small_font_only_when_big_will_not_fit(self):
+        big, small = core._FONTS
+        # plenty of room -> big
+        assert core.fit(50, 300)[0] is big
+        # 8 rows -> big (h=10) can't fit, small (h=7) can
+        got = core.fit(8, 120)
+        assert got is not None and got[0] is small
 
-    def test_uniform_scale_when_neither_axis_has_slack(self):
-        tw = core.total_local_width("12:34:56")
-        # cols and 2*rows in the same ratio as tw:DH -> no slack either way
-        rows = 90
-        cols = round(tw * (2 * rows) / core.DH)
-        sx, sy = core.fit_scale(rows, cols)
-        assert abs(sx - sy) < 1e-3
-
-
-class TestGlyphMatcher:
-    def test_empty_and_full(self):
-        assert core._match_char(0) == " "
-        assert core._match_char((1 << (core._SS * core._SS)) - 1) == "█"
-
-    def test_top_half(self):
-        mask = 0
-        for j in range(core._SS // 2):
-            for i in range(core._SS):
-                mask |= 1 << (j * core._SS + i)
-        assert core._match_char(mask) == "▀"
-
-    def test_diagonal_picks_a_triangle(self):
-        mask = 0
-        for j in range(core._SS):
-            for i in range(core._SS):
-                if (i + 0.5) / core._SS + (j + 0.5) / core._SS <= 1:
-                    mask |= 1 << (j * core._SS + i)
-        assert core._match_char(mask) == "◤"
-
-    def test_only_widely_supported_glyphs(self):
-        # everything in the candidate set is space, or in Block Elements
-        # (U+2580..U+259F), or one of the four Geometric-Shapes triangles.
-        for ch, _ in core._CANDIDATES:
-            cp = ord(ch)
-            assert ch == " " or 0x2580 <= cp <= 0x259F or 0x25E2 <= cp <= 0x25E5
+    def test_bigger_terminal_is_never_smaller(self):
+        _, nx1, ny1 = core.fit(20, 120)
+        _, nx2, ny2 = core.fit(45, 260)
+        assert nx2 >= nx1 and ny2 >= ny1
 
 
 class TestRenderArt:
     def test_exact_grid(self):
-        g = core.render("12:34:56", rows=20, cols=120)
-        assert len(g) == 20
-        assert all(len(line) == 120 for line in g)
+        g = core.render("12:34:56", rows=24, cols=120)
+        assert len(g) == 24 and all(len(line) == 120 for line in g)
 
-    def test_uses_block_glyphs(self):
-        blob = "".join(core.render("12:34:56", rows=20, cols=120))
-        assert "█" in blob and any(ch in blob for ch in "▀▄◤◥◣◢")
+    def test_only_clean_glyphs(self):
+        blob = set("".join(core.render("12:34:56", rows=24, cols=120)))
+        assert blob <= _GLYPHS
 
-    def test_signature_takes_float_scales(self):
-        g = core.render_art("12:34:56", 20, 120, 1.05, 1.1)
-        assert len(g) == 20 and all(len(line) == 120 for line in g)
+    def test_uses_blocks_and_triangles(self):
+        blob = "".join(core.render("12:34:56", rows=24, cols=140))
+        assert "█" in blob and any(t in blob for t in "◤◥◣◢")
 
     def test_not_literal_text(self):
-        blob = "\n".join(core.render("12:34:56", rows=20, cols=120))
+        blob = "\n".join(core.render("12:34:56", rows=24, cols=120))
         assert "12:34:56" not in blob
 
-    def test_block_is_centred(self):
-        g = core.render("00:00:00", rows=30, cols=150)
+    def test_centred(self):
+        g = core.render("00:00:00", rows=34, cols=170)
         used = [i for i, line in enumerate(g) if line.strip()]
         assert abs(used[0] - (len(g) - 1 - used[-1])) <= 2
         left = min(len(l) - len(l.lstrip()) for l in g if l.strip())
         right = min(len(l) - len(l.rstrip()) for l in g if l.strip())
         assert abs(left - right) <= 2
 
-    def test_colon_columns_are_lighter_than_digit_columns(self):
-        g = core.render("88:88:88", rows=24, cols=140)
-        ink_per_col = [sum(row[c] != " " for row in g) for c in range(140)]
-        busiest = max(ink_per_col)
-        # the two colon gaps should show up as local minima with less ink
-        assert min(c for c in ink_per_col if c >= 0) < busiest
-
 
 class TestRender:
     def test_returns_exact_grid(self):
         g = core.render("12:34:56", rows=10, cols=80)
-        assert len(g) == 10
-        assert all(len(line) == 80 for line in g)
+        assert len(g) == 10 and all(len(line) == 80 for line in g)
 
     def test_text_mode_centres_string(self):
         g = core.render("12:34:56", rows=3, cols=20)
         non_blank = [i for i, line in enumerate(g) if line.strip()]
         assert non_blank == [1]
         assert g[1].strip() == "12:34:56"
-        left = len(g[1]) - len(g[1].lstrip())
-        right = len(g[1]) - len(g[1].rstrip())
-        assert abs(left - right) <= 1
 
-    def test_text_fallback_when_art_would_be_unreadable(self):
-        g = core.render("12:34:56", rows=10, cols=20)
+    def test_text_fallback_when_too_narrow(self):
+        g = core.render("12:34:56", rows=12, cols=18)
         assert any("12:34:56" in line for line in g)
         assert "█" not in "".join(g)

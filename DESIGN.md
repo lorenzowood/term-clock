@@ -205,16 +205,47 @@ which have consistent metrics in essentially every terminal font. The chamfers
 are a little chunkier without the 2x3 resolution but the edges are clean.
 `test_only_widely_supported_glyphs` pins the codepoint ranges. **49 passed.**
 
+### Step 10 — refinement: integer-scaled bitmap font, no raggedness (feedback)
+
+Feedback: the best-fit coverage match still produced ragged, glitchy edges and
+stray non-45-degree runs. Asked to simplify: numbers made only from blocks and
+45-degree triangles, at scales that stay exact.
+
+Reworked into a two-level bitmap approach:
+
+- **Design grid.** Each digit is a seven-segment shape on a small integer grid
+  (`Font(10,10,2)` normally, `Font(7,7,1)` when that won't fit). `_chamfer`
+  walks the filled grid and replaces every *convex* corner cell with one of the
+  design markers `F/J/L/P` (the four triangle orientations). That single-cell
+  cut is what reads as a segmented-display bevel.
+- **Integer expansion.** `_expand` blows one design cell up to an `nx` x `ny`
+  block: empty and solid cells tile trivially; a triangle cell is rasterised
+  (4x4 supersample, coverage thresholds) into full blocks + a clean run of the
+  *one* triangle glyph on its hypotenuse. Output is only ever `space`, `█`,
+  `◤◥◣◢` -- nothing else can appear, so there are no half-lit or ragged cells.
+  `_expand` is `lru_cache`d per `(marker, nx, ny)`; a whole 50x200 frame
+  renders in ~0.2 ms (no frame cache needed).
+- **`fit`** picks the largest font that fits, then an integer cell size: base
+  `s = min(rows//h, cols//wtot)`, with each axis allowed to grow to `1.5*s`
+  (`MAX_ASPECT`) to use slack before the rest becomes centring margin.
+
+`test_core.py` rewritten around the bitmap font (design-char alphabet, chamfer
+of every convex corner, `_expand` output alphabet, `fit` aspect bound, font
+selection). **70 passed.** Visual checks 8x70 … 50x200: crisp segmented digits,
+no ragged edges, only blocks and triangles.
+
 ## 5. Final state
 
-- 49 tests, all passing, ~0.3s.
+- 70 tests, all passing, ~0.05s.
 - `core.py` pure and total (returns exact-size grids for any input, including
   degenerate sizes); `cli.py` is the only module that touches the terminal.
-- Big digits: chamfered segmented-display vector model, rasterised by best-fit
-  match against a small glyph library (full/half/eighth blocks, the ten
-  quadrants, the four triangles `◤◥◣◢`); aspect stretch capped at 1.5x then
-  centred; text fallback below a readability floor.
-- Every render glyph has consistent metrics in standard terminal fonts (Block
-  Elements + four Geometric-Shapes triangles); no exotic codepoints.
-- Known simple choices: 6x6 coverage sampling (no sub-cell anti-aliasing beyond
-  the glyph set); colon dots are octagons; glyph constants tuned by eye.
+- Big digits: seven-segment bitmap font on an integer design grid with
+  one-cell chamfered corners, expanded by integer `nx` x `ny` scale factors.
+  Output alphabet is exactly `{space, █, ◤, ◥, ◣, ◢}` -- all common glyphs,
+  all consistent metrics -- so the result never looks ragged.
+- Aspect: each axis stretches at most 1.5x past the uniform integer scale to
+  use slack, then the rest is centring margin. Text fallback when even the
+  small font doesn't fit.
+- Known simple choices: two hand-tuned font sizes; colon dots are chamfered
+  rectangles; the triangle staircase at large non-square scales is stepped but
+  clean.
