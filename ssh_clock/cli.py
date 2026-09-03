@@ -47,7 +47,7 @@ def run(
     get_size: Callable[[], tuple[int, int]] | None = None,
     get_time: Callable[[], time.struct_time] | None = None,
     sleep: Callable[[float], None] = time.sleep,
-    tick: float = 0.1,
+    tick: float = 0.25,
 ) -> int:
     out = out if out is not None else sys.stdout
     get_size = get_size or (lambda: tuple(shutil.get_terminal_size((80, 24))))

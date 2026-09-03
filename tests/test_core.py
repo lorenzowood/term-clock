@@ -118,15 +118,47 @@ class TestFitScale:
         assert abs(sx - sy) < 1e-3
 
 
+class TestGlyphMatcher:
+    def test_empty_and_full(self):
+        assert core._match_char(0) == " "
+        assert core._match_char((1 << (core._SS * core._SS)) - 1) == "█"
+
+    def test_top_half(self):
+        mask = 0
+        for j in range(core._SS // 2):
+            for i in range(core._SS):
+                mask |= 1 << (j * core._SS + i)
+        assert core._match_char(mask) == "▀"
+
+    def test_diagonal_picks_a_triangle(self):
+        mask = 0
+        for j in range(core._SS):
+            for i in range(core._SS):
+                if (i + 0.5) / core._SS + (j + 0.5) / core._SS <= 1:
+                    mask |= 1 << (j * core._SS + i)
+        assert core._match_char(mask) == "◤"
+
+    def test_sextant_codepoints_in_legacy_block(self):
+        for v in range(1, 63):
+            if v in (21, 42):
+                continue
+            cp = ord(core._sextant_codepoint(v))
+            assert 0x1FB00 <= cp <= 0x1FB3B
+
+
 class TestRenderArt:
     def test_exact_grid(self):
         g = core.render("12:34:56", rows=20, cols=120)
         assert len(g) == 20
         assert all(len(line) == 120 for line in g)
 
-    def test_uses_half_block_glyphs(self):
+    def test_uses_block_glyphs(self):
         blob = "".join(core.render("12:34:56", rows=20, cols=120))
-        assert any(ch in blob for ch in "▀▄█")
+        assert "█" in blob and any(ch in blob for ch in "▀▄◤◥◣◢")
+
+    def test_signature_takes_float_scales(self):
+        g = core.render_art("12:34:56", 20, 120, 1.05, 1.1)
+        assert len(g) == 20 and all(len(line) == 120 for line in g)
 
     def test_not_literal_text(self):
         blob = "\n".join(core.render("12:34:56", rows=20, cols=120))
@@ -166,4 +198,4 @@ class TestRender:
     def test_text_fallback_when_art_would_be_unreadable(self):
         g = core.render("12:34:56", rows=10, cols=20)
         assert any("12:34:56" in line for line in g)
-        assert not any(ch in "".join(g) for ch in "▀▄█")
+        assert "█" not in "".join(g)

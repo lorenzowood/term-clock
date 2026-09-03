@@ -163,13 +163,48 @@ centring, text fallback). `test_cli.py` unchanged (`core.BLOCK` still appears
 in big digits). Run: **44 passed**. Visual checks 12x60 … 50x200 — bold, clean
 segments, readable at every size.
 
+### Step 8 — refinement: segmented model + best-fit glyph match (feedback)
+
+Feedback (with references): the rectangular-segment + half-block version read
+terribly at large sizes -- the strokes broke into disconnected `▀`/`▄`
+fragments. Asked for (a) a tighter aspect cap -- stretch until the larger side
+is 1.5x the smaller, then centre, no further; (b) a *Geascript*-style
+segmented display; and (c) real use of Unicode diagonal glyphs so diagonals
+render as diagonals.
+
+Rebuilt the big-digit path:
+
+- **Chamfered segmented model.** Seven segments, each a hexagon with 45-degree
+  ends, positioned so adjacent segments *share an edge* -- a digit is one
+  connected shape with the classic notched-corner LCD look. `digit_ink` /
+  `colon_ink` test point-in-convex-polygon.
+- **Best-fit glyph rasteriser.** A candidate library (`_build_candidates`):
+  space, block + eighth-block + quadrant elements, the four solid triangles
+  `◤ ◥ ◣ ◢`, and all 60 **sextants** (`U+1FB00`+, 2x3 sub-cell). Each carries a
+  6x6 coverage bitmap. Per character cell we sample the model on a 6x6 grid and
+  emit the candidate with the smallest bit-difference (`int.bit_count` on the
+  XOR). Diagonals pick triangles; thin strokes snap to eighth-blocks.
+- A 3x3 coarse probe skips the many all-empty / all-solid cells; results are
+  memoised (`_match_char`) and whole frames are `lru_cache`d. ~25 ms at 24x100,
+  ~80 ms at 50x200, recomputed once a second.
+- `fit_scale` unchanged in spirit (1.5 aspect cap, then centre); tuned the
+  readability floor so art still kicks in at 8 rows when width allows.
+
+Tests: added `TestGlyphMatcher` (empty/full/half/diagonal, sextant codepoint
+range) and updated the render assertions for the new glyph set. **49 passed.**
+Visual checks 8x80 … 60x240: connected, legible segmented digits with real
+diagonal chamfers at every size. `cli` tick relaxed to 0.25 s.
+
 ## 5. Final state
 
-- 44 tests, all passing, ~0.05s.
+- 49 tests, all passing, ~0.3s.
 - `core.py` pure and total (returns exact-size grids for any input, including
   degenerate sizes); `cli.py` is the only module that touches the terminal.
-- Big digits: vector seven-segment glyphs (rectangular segments), rasterised
-  with half-block characters at whatever scale fits; aspect stretch capped at
-  1.5x, then centred; text fallback below a readability floor.
-- Known simple choices: no anti-aliasing (axis-aligned edges don't need it);
-  the colon dots are squares; glyph geometry constants tuned by eye.
+- Big digits: chamfered segmented-display vector model, rasterised by best-fit
+  match against a glyph library (blocks, eighth-blocks, quadrants, triangles,
+  sextants); aspect stretch capped at 1.5x then centred; text fallback below a
+  readability floor.
+- Rendering needs a font with the "Symbols for Legacy Computing" sextants
+  (`U+1FB00`+) and `◤◥◣◢` for best results; most modern terminal fonts have them.
+- Known simple choices: 6x6 coverage sampling (no sub-cell anti-aliasing beyond
+  the glyph set); colon dots are octagons; glyph constants tuned by eye.
