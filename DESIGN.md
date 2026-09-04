@@ -339,16 +339,23 @@ Diff paints omitted SGR when the ink was the terminal default, so after red
 the next interval's digits and bar stayed red. Every run now emits an
 explicit foreground (including `39` for default).
 
+### Step 23 — padding and spacing as size fractions (feedback)
+
+Fixed cell counts made large clocks look squashed: `--padding` / `--spacing`
+stayed at 1 and 2 while digits grew. They are now multipliers of digit size
+(padding) and digit width (spacing), rounded up so a positive fraction never
+collapses to 0. Explicit `0` still means none. Defaults: `0.125` and `0.2`.
+
 ## 5. Final state
 
-- 113 tests, all passing. Intervals default on (15 minutes from `0:00`).
+- 118 tests, all passing. Intervals default on (15 minutes from `0:00`).
 - `core.py` pure and total (returns exact-size grids for any input, including
   degenerate sizes); `cli.py` is the only module that touches the terminal.
 - Big digits: seven-segment rectangles of `█`. Free bar ends are square;
   outer L-joint curves get 1:1 45° stairs of `◤ ◥ ◣ ◢`. Colons are small
   block pairs, no diagonals.
-- `--padding` (default 1), `--spacing` (default 2), `--hour-format` 12 or 24
-  (default: system, else 24).
+- `--padding` (default 0.125 of digit size), `--spacing` (default 0.2 of
+  digit width), `--hour-format` 12 or 24 (default: system, else 24).
 - Aspect: default cell is 5t×5t characters; each axis may stretch by at most
   1.5× (longer bars, same stroke thickness) before leftover space is centred.
   Text fallback when even t=1 does not fit.

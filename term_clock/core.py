@@ -14,6 +14,7 @@ curves (two segments meeting) are cut with a 1:1 45-degree stair of
 from __future__ import annotations
 
 import locale
+import math
 from dataclasses import dataclass
 
 from . import interval as iv
@@ -86,8 +87,8 @@ def choose_mode(rows: int) -> str:
 class Style:
     """User-facing layout knobs."""
 
-    padding: int = 1
-    spacing: int = 2
+    padding: float = 0.125
+    spacing: float = 0.2
     hour_format: str = "24"
     interval_minutes: int = 0
     interval_start_s: int = 0
@@ -307,13 +308,20 @@ def _label(time_str: str, suffix: str) -> str:
     return f"{time_str} {suffix}" if suffix else time_str
 
 
+def cells_for(mult: float, size: int) -> int:
+    """``mult * size`` rounded up to a cell count. ``0`` stays ``0``."""
+    if mult <= 0 or size <= 0:
+        return 0
+    return max(1, math.ceil(mult * size - 1e-9))
+
+
 MAX_ASPECT = 1.5
 
 
-def _bar_extra(style: Style, t: int) -> int:
+def _bar_extra(style: Style, t: int, pad_v: int) -> int:
     if style.interval_minutes <= 0 or not style.interval_bar:
         return 0
-    return max(0, style.padding) + max(1, t)
+    return max(0, pad_v) + max(1, t)
 
 
 def _ink_color(style: Style, state: iv.IntervalState | None) -> str | None:
@@ -333,43 +341,51 @@ def fit(
     style: Style | None = None,
     suffix: str = "",
 ) -> Layout | None:
-    """Largest layout that fits the inner (padded) frame.
+    """Largest layout that fits, including scaled padding and digit gaps.
 
     Default cell is 5t×5t; each axis may stretch by at most ``MAX_ASPECT``.
+    Padding is a fraction of digit size; spacing is a fraction of digit width.
+    Both are rounded up to whole cells, unless the multiplier is 0.
     """
     style = style or Style()
-    pad = max(0, style.padding)
-    gap = max(0, style.spacing)
-    rows = max(0, rows - 2 * pad)
-    cols = max(0, cols - 2 * pad - _suffix_span(suffix, gap))
-    n_d = sum(c != ":" for c in time_str) or 1
-    n_c = time_str.count(":")
-    n_g = max(0, len(time_str) - 1)
+    pad_m = max(0.0, float(style.padding))
+    sp_m = max(0.0, float(style.spacing))
     best: Layout | None = None
-    for t in range(1, rows + 1):
-        extra = _bar_extra(style, t)
-        avail = rows - extra
-        if avail < 1 or 5 * t > avail:
+    for t in range(1, max(0, rows) + 1):
+        if 5 * t > rows:
             break
-        max_h = min(avail, int(5 * t * MAX_ASPECT))
-        colon_w = colon_width(max_h)
-        lo = Layout(t, 3 * t, t, gap, colon_w)
-        if lo.digit_h > avail or _clock_width(lo, time_str) > cols:
+        max_h = min(rows, int(5 * t * MAX_ASPECT))
+        vh_hi = (max_h - 3 * t) // 2
+        if vh_hi < t:
             continue
-        vh = (max_h - 3 * t) // 2
-        if vh < t:
+        chosen_vh = None
+        for vh in range(vh_hi, t - 1, -1):
+            dh = 3 * t + 2 * vh
+            pad_v = cells_for(pad_m, dh)
+            extra = _bar_extra(style, t, pad_v)
+            if dh + 2 * pad_v + extra <= rows:
+                chosen_vh = vh
+                break
+        if chosen_vh is None:
             continue
-        max_w = min(
-            (cols - n_c * colon_w - n_g * gap) // n_d,
-            int(5 * t * MAX_ASPECT),
-        )
-        hw = max_w - 2 * t
-        if hw < 3 * t:
-            hw = 3 * t
-        lay = Layout(t, hw, vh, gap, colon_width(3 * t + 2 * vh))
-        if lay.digit_h > avail or _clock_width(lay, time_str) > cols:
+        dh = 3 * t + 2 * chosen_vh
+        colon_w = colon_width(dh)
+        chosen_hw = None
+        for dw in range(int(5 * t * MAX_ASPECT), 5 * t - 1, -1):
+            hw = dw - 2 * t
+            if hw < 3 * t:
+                continue
+            pad_h = cells_for(pad_m, dw)
+            gap = cells_for(sp_m, dw)
+            lay = Layout(t, hw, chosen_vh, gap, colon_w)
+            need = _clock_width(lay, time_str) + _suffix_span(suffix, gap) + 2 * pad_h
+            if need <= cols:
+                chosen_hw = hw
+                break
+        if chosen_hw is None:
             continue
-        best = lay
+        gap = cells_for(sp_m, 2 * t + chosen_hw)
+        best = Layout(t, chosen_hw, chosen_vh, gap, colon_width(dh))
     return best
 
 
@@ -412,7 +428,7 @@ def render_art(
         ]
     disp_w = len(display[0]) if display else 0
     bar_h = lay.t if (state is not None and style.interval_bar) else 0
-    bar_gap = max(0, style.padding) if bar_h else 0
+    bar_gap = cells_for(style.padding, lay.digit_h) if bar_h else 0
     stack_h = len(display) + bar_gap + bar_h
     left = max(0, (cols - disp_w) // 2)
     top = max(0, (rows - stack_h) // 2)

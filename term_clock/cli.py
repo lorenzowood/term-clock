@@ -30,6 +30,13 @@ def _nonneg(value: str) -> int:
     return n
 
 
+def _nonneg_float(value: str) -> float:
+    n = float(value)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return n
+
+
 def _interval(value: str) -> int:
     try:
         return iv.parse_interval_minutes(value)
@@ -115,17 +122,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--padding",
-        type=_nonneg,
-        default=file_cfg.get("padding", 1),
+        type=_nonneg_float,
+        default=file_cfg.get("padding", 0.125),
         metavar="N",
-        help="blank rows and columns around the clock (default: 1)",
+        help="margin around the clock as a fraction of digit size (default: 0.125; 0 = none)",
     )
     p.add_argument(
         "--spacing",
-        type=_nonneg,
-        default=file_cfg.get("spacing", 2),
+        type=_nonneg_float,
+        default=file_cfg.get("spacing", 0.2),
         metavar="N",
-        help="blank columns between digits (default: 2)",
+        help="gap between digits as a fraction of digit width (default: 0.2; 0 = none)",
     )
     p.add_argument(
         "--hour-format",

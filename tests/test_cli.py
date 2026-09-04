@@ -110,8 +110,8 @@ class TestPaint:
 class TestArgs:
     def test_defaults(self):
         ns = cli.parse_args([])
-        assert ns.padding == 1
-        assert ns.spacing == 2
+        assert ns.padding == 0.125
+        assert ns.spacing == 0.2
         assert ns.hour_format is None
         assert ns.interval == 15
         assert ns.interval_start == 0
@@ -124,11 +124,16 @@ class TestArgs:
 
     def test_flags(self):
         ns = cli.parse_args(
-            ["--padding", "3", "--spacing", "5", "--hour-format", "12"]
+            ["--padding", "0.25", "--spacing", "0.5", "--hour-format", "12"]
         )
-        assert ns.padding == 3
-        assert ns.spacing == 5
+        assert ns.padding == 0.25
+        assert ns.spacing == 0.5
         assert ns.hour_format == "12"
+
+    def test_padding_zero(self):
+        ns = cli.parse_args(["--padding", "0", "--spacing", "0"])
+        assert ns.padding == 0
+        assert ns.spacing == 0
 
     def test_hour_format_24(self):
         ns = cli.parse_args(["--hour-format", "24"])

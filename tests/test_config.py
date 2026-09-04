@@ -11,7 +11,7 @@ def test_reads_section(tmp_path):
     p = tmp_path / "term-clock.conf"
     p.write_text(
         "[term-clock]\n"
-        "padding = 3\n"
+        "padding = 0.125\n"
         "interval = off\n"
         "interval-start = 9:00\n"
         "interval-amber-color = #d07000\n"
@@ -19,7 +19,7 @@ def test_reads_section(tmp_path):
         encoding="utf-8",
     )
     got = cfg.load_config(p)
-    assert got["padding"] == 3
+    assert got["padding"] == 0.125
     assert got["interval"] == 0
     assert got["interval_start"] == 9 * 3600
     assert got["interval_amber_color"] == "#d07000"

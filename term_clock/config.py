@@ -28,8 +28,8 @@ def load_config(path: str | Path | None = None) -> dict:
         return {}
     src = cp[_SECTION]
     out: dict = {}
-    _put_int(src, out, "padding", "padding")
-    _put_int(src, out, "spacing", "spacing")
+    _put_float(src, out, "padding", "padding")
+    _put_float(src, out, "spacing", "spacing")
     if "hour-format" in src:
         v = src["hour-format"].strip().lower()
         if v in {"12", "24"}:
@@ -58,6 +58,14 @@ def load_config(path: str | Path | None = None) -> dict:
 def _put_int(src, out: dict, key: str, dest: str) -> None:
     if key in src:
         n = int(src[key])
+        if n < 0:
+            raise ValueError(f"{key} must be >= 0")
+        out[dest] = n
+
+
+def _put_float(src, out: dict, key: str, dest: str) -> None:
+    if key in src:
+        n = float(src[key])
         if n < 0:
             raise ValueError(f"{key} must be >= 0")
         out[dest] = n

@@ -174,28 +174,59 @@ class TestGlyph:
                     assert t + t not in row
 
 
+class TestCellsFor:
+    def test_zero_multiplier_is_zero_cells(self):
+        assert core.cells_for(0, 80) == 0
+        assert core.cells_for(0.0, 1) == 0
+
+    def test_rounds_up_so_a_positive_fraction_is_at_least_one(self):
+        assert core.cells_for(0.125, 1) == 1
+        assert core.cells_for(0.125, 8) == 1
+        assert core.cells_for(0.125, 9) == 2
+        assert core.cells_for(0.2, 5) == 1
+        assert core.cells_for(0.2, 10) == 2
+
+
 class TestStyle:
     def test_defaults(self):
         s = core.Style()
-        assert s.padding == 1
-        assert s.spacing == 2
+        assert s.padding == 0.125
+        assert s.spacing == 0.2
         assert s.hour_format == "24"
 
-    def test_fit_uses_default_spacing(self):
+    def test_fit_uses_spacing_as_a_fraction_of_digit_width(self):
         lay = core.fit(rows=24, cols=120)
         assert lay is not None
-        assert lay.gap == 2
+        assert lay.gap == core.cells_for(0.2, lay.digit_w)
 
     def test_fit_honours_custom_spacing(self):
-        lay = core.fit(rows=24, cols=160, style=core.Style(spacing=4))
+        lay = core.fit(rows=40, cols=200, style=core.Style(spacing=0.5))
         assert lay is not None
-        assert lay.gap == 4
+        assert lay.gap == core.cells_for(0.5, lay.digit_w)
+
+    def test_zero_spacing_is_allowed(self):
+        lay = core.fit(rows=24, cols=120, style=core.Style(spacing=0))
+        assert lay is not None
+        assert lay.gap == 0
+
+    def test_spacing_grows_with_digit_size(self):
+        small = core.fit(rows=16, cols=80)
+        big = core.fit(rows=60, cols=300)
+        assert small and big
+        assert big.digit_w > small.digit_w
+        assert big.gap > small.gap
 
     def test_padding_leaves_a_blank_frame(self):
-        g = core.render("12:34:56", rows=24, cols=120, style=core.Style(padding=2))
-        assert all(line.strip() == "" for line in g[:2])
-        assert all(line.strip() == "" for line in g[-2:])
-        assert all(line[:2].strip() == "" and line[-2:].strip() == "" for line in g)
+        style = core.Style(padding=0.25)
+        g = core.render("12:34:56", rows=40, cols=200, style=style)
+        lay = core.fit(40, 200, style=style)
+        assert lay is not None
+        pad_v = core.cells_for(style.padding, lay.digit_h)
+        pad_h = core.cells_for(style.padding, lay.digit_w)
+        assert pad_v >= 1 and pad_h >= 1
+        assert all(line.strip() == "" for line in g[:pad_v])
+        assert all(line.strip() == "" for line in g[-pad_v:])
+        assert all(line[:pad_h].strip() == "" and line[-pad_h:].strip() == "" for line in g)
 
 
 class TestFit:
@@ -265,9 +296,12 @@ class TestRenderArt:
         left = min(len(l) - len(l.lstrip()) for l in g if l.strip())
         right = min(len(l) - len(l.rstrip()) for l in g if l.strip())
         assert abs(left - right) <= 2
-        # default padding is one cell on every side
-        assert used[0] >= 1 and used[-1] <= 32
-        assert left >= 1 and right >= 1
+        lay = core.fit(34, 170)
+        assert lay is not None
+        pad_v = core.cells_for(0.125, lay.digit_h)
+        pad_h = core.cells_for(0.125, lay.digit_w)
+        assert used[0] >= pad_v and used[-1] <= 33 - pad_v
+        assert left >= pad_h and right >= pad_h
 
     @pytest.mark.parametrize(
         "rows,cols",

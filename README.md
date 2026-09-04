@@ -39,7 +39,7 @@ python -m term_clock
 ```
 
 ```sh
-term-clock --padding 1 --spacing 2          # layout defaults
+term-clock --padding 0.125 --spacing 0.2    # layout defaults
 term-clock --hour-format 12
 term-clock --interval off                   # plain clock, no interval colours
 term-clock --interval 15 --interval-bar on
@@ -52,8 +52,8 @@ Press **CTRL+C** to quit.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--padding N` | `1` | Blank rows and columns around the clock |
-| `--spacing N` | `2` | Blank columns between digits |
+| `--padding N` | `0.125` | Margin around the clock, as a fraction of digit size (rounded up; `0` = none) |
+| `--spacing N` | `0.2` | Gap between digits, as a fraction of digit width (rounded up; `0` = none) |
 | `--hour-format {12,24}` | system clock, or `24` | 12-hour with AM/PM, or 24-hour |
 | `--clock-color HEX` | terminal | Digit colour (`#rrggbb`) |
 | `--background-color HEX` | terminal | Background colour |
@@ -98,8 +98,8 @@ if set). CLI flags override the file.
 
 ```ini
 [term-clock]
-padding = 1
-spacing = 2
+padding = 0.125
+spacing = 0.2
 hour-format = 24
 clock-color =
 background-color =
@@ -122,6 +122,9 @@ interval-bar = on
   (each axis stretched by at most 1.5× before the rest becomes centring
   margin). If the window is too small for a readable clock, it falls back
   to the text version.
+- **Padding / spacing**: fractions of digit size, rounded up to whole
+  cells so a large clock keeps the same proportions as a small one. `0`
+  means none.
 - **Colons**: two small axis-aligned blocks (no diagonals), centred, spanning
   at most one third of the digit height.
 - **12-hour**: AM or PM sits to the right of the digits.
