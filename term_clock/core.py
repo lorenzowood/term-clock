@@ -6,7 +6,8 @@ Everything here is deterministic and unit-tested. The runtime shell in
 Big digits
 ----------
 Seven-segment bars drawn with full blocks ``█``. Horizontal bars run across,
-vertical bars run down. Convex corners are cut with a 1:1 45-degree stair of
+vertical bars run down. Free ends of those bars stay square. Outer L-joint
+curves (two segments meeting) are cut with a 1:1 45-degree stair of
 ``◤ ◥ ◣ ◢`` -- one column per row, no sampling, no off-angle hypotenuses.
 """
 
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 import locale
 from dataclasses import dataclass
+
+from . import interval as iv
 
 BLOCK = "█"
 
@@ -86,6 +89,35 @@ class Style:
     padding: int = 1
     spacing: int = 2
     hour_format: str = "24"
+    interval_minutes: int = 0
+    interval_start_s: int = 0
+    interval_amber_s: int = 5 * 60
+    interval_red_s: int = 60
+    interval_amber_color: str = "#f09000"
+    interval_red_color: str = "#ff0000"
+    interval_bar: bool = False
+    clock_color: str | None = None
+    background_color: str | None = None
+
+
+@dataclass
+class Frame:
+    """Character grid plus optional per-cell foreground hex colours."""
+
+    chars: list[str]
+    fg: list[list[str | None]]
+
+    @classmethod
+    def blank(cls, rows: int, cols: int) -> Frame:
+        return cls(
+            [" " * cols for _ in range(rows)],
+            [[None] * cols for _ in range(rows)],
+        )
+
+    @classmethod
+    def from_chars(cls, chars: list[str], ink: str | None = None) -> Frame:
+        fg = [[ink if c != " " else None for c in line] for line in chars]
+        return cls(list(chars), fg)
 
 
 @dataclass(frozen=True)
@@ -178,6 +210,34 @@ def _convex_corners(ink):
     return out
 
 
+def _bar_end_corners(corners, t: int) -> set:
+    """Convex corner pairs that are free ends of a bar, not L-joint curves.
+
+    A termination is two corners spanning stroke thickness ``t``: UL+DL or
+    UR+DR on a vertical face, UL+UR or DL+DR on a horizontal face.
+    """
+    if t < 2:
+        return set()
+    span = t - 1
+    by_kind: dict[str, set[tuple[int, int]]] = {}
+    for x, y, k in corners:
+        by_kind.setdefault(k, set()).add((x, y))
+    skip: set[tuple[int, int, str]] = set()
+
+    def pair(k1: str, k2: str, dx: int, dy: int) -> None:
+        for x, y in by_kind.get(k1, ()):
+            other = (x + dx, y + dy)
+            if other in by_kind.get(k2, ()):
+                skip.add((x, y, k1))
+                skip.add((other[0], other[1], k2))
+
+    pair("UL", "DL", 0, span)
+    pair("UR", "DR", 0, span)
+    pair("UL", "UR", span, 0)
+    pair("DL", "DR", span, 0)
+    return skip
+
+
 def _cut_corner(grid, cx, cy, n, kind):
     """1:1 45° stair of size ``n``: put the triangle on the diagonal, clear outside."""
     sx, sy, glyph = _CUT[kind]
@@ -195,8 +255,11 @@ def _cut_corner(grid, cx, cy, n, kind):
 def _raster(ink, t: int) -> list[str]:
     grid = [["█" if cell else " " for cell in row] for row in ink]
     n = max(1, t // 2)
-    for cx, cy, kind in _convex_corners(ink):
-        _cut_corner(grid, cx, cy, n, kind)
+    corners = _convex_corners(ink)
+    skip = _bar_end_corners(corners, t)
+    for cx, cy, kind in corners:
+        if (cx, cy, kind) not in skip:
+            _cut_corner(grid, cx, cy, n, kind)
     return ["".join(row) for row in grid]
 
 
@@ -247,6 +310,22 @@ def _label(time_str: str, suffix: str) -> str:
 MAX_ASPECT = 1.5
 
 
+def _bar_extra(style: Style, t: int) -> int:
+    if style.interval_minutes <= 0 or not style.interval_bar:
+        return 0
+    return max(0, style.padding) + max(1, t)
+
+
+def _ink_color(style: Style, state: iv.IntervalState | None) -> str | None:
+    if state is None:
+        return style.clock_color
+    if state.zone == "red":
+        return style.interval_red_color
+    if state.zone == "amber":
+        return style.interval_amber_color
+    return style.clock_color
+
+
 def fit(
     rows: int,
     cols: int,
@@ -268,12 +347,14 @@ def fit(
     n_g = max(0, len(time_str) - 1)
     best: Layout | None = None
     for t in range(1, rows + 1):
-        if 5 * t > rows:
+        extra = _bar_extra(style, t)
+        avail = rows - extra
+        if avail < 1 or 5 * t > avail:
             break
-        max_h = min(rows, int(5 * t * MAX_ASPECT))
+        max_h = min(avail, int(5 * t * MAX_ASPECT))
         colon_w = colon_width(max_h)
         lo = Layout(t, 3 * t, t, gap, colon_w)
-        if lo.digit_h > rows or _clock_width(lo, time_str) > cols:
+        if lo.digit_h > avail or _clock_width(lo, time_str) > cols:
             continue
         vh = (max_h - 3 * t) // 2
         if vh < t:
@@ -286,10 +367,25 @@ def fit(
         if hw < 3 * t:
             hw = 3 * t
         lay = Layout(t, hw, vh, gap, colon_width(3 * t + 2 * vh))
-        if lay.digit_h > rows or _clock_width(lay, time_str) > cols:
+        if lay.digit_h > avail or _clock_width(lay, time_str) > cols:
             continue
         best = lay
     return best
+
+
+def _put(frame: Frame, x: int, y: int, ch: str, color: str | None) -> None:
+    if y < 0 or y >= len(frame.chars):
+        return
+    row = frame.chars[y]
+    if x < 0 or x >= len(row):
+        return
+    frame.chars[y] = row[:x] + ch + row[x + 1 :]
+    frame.fg[y][x] = color if ch != " " else None
+
+
+def _blit(frame: Frame, x0: int, y: int, line: str, ink: str | None) -> None:
+    for i, ch in enumerate(line):
+        _put(frame, x0 + i, y, ch, ink if ch != " " else None)
 
 
 def render_art(
@@ -298,34 +394,112 @@ def render_art(
     cols: int,
     lay: Layout,
     suffix: str = "",
-) -> list[str]:
+    style: Style | None = None,
+    state: iv.IntervalState | None = None,
+) -> Frame:
+    style = style or Style()
     blocks = [paint(ch, lay) for ch in time_str]
     gap = " " * lay.gap
-    body = [gap.join(parts) for parts in zip(*blocks)]
-    if suffix and body:
+    digit_body = [gap.join(parts) for parts in zip(*blocks)]
+    digit_w = len(digit_body[0]) if digit_body else 0
+    display = digit_body
+    if suffix and digit_body:
         extra = gap + suffix
-        mid = len(body) // 2
-        body = [
+        mid = len(digit_body) // 2
+        display = [
             line + (extra if i == mid else " " * len(extra))
-            for i, line in enumerate(body)
+            for i, line in enumerate(digit_body)
         ]
-    bw = len(body[0]) if body else 0
-    left = max(0, (cols - bw) // 2)
-    top = max(0, (rows - len(body)) // 2)
-
-    grid = [" " * cols for _ in range(rows)]
-    for i, line in enumerate(body):
+    disp_w = len(display[0]) if display else 0
+    bar_h = lay.t if (state is not None and style.interval_bar) else 0
+    bar_gap = max(0, style.padding) if bar_h else 0
+    stack_h = len(display) + bar_gap + bar_h
+    left = max(0, (cols - disp_w) // 2)
+    top = max(0, (rows - stack_h) // 2)
+    ink = _ink_color(style, state)
+    frame = Frame.blank(rows, cols)
+    for i, line in enumerate(display):
         if 0 <= top + i < rows:
-            grid[top + i] = (" " * left + line)[:cols].ljust(cols)
-    return grid
+            _blit(frame, left, top + i, line[:cols], ink)
+    if bar_h and digit_w and state is not None:
+        n, a, r = iv.bar_widths(
+            state.fill_normal, state.fill_amber, state.fill_red, digit_w
+        )
+        y0 = top + len(display) + bar_gap
+        colors = (
+            [style.clock_color] * n
+            + [style.interval_amber_color] * a
+            + [style.interval_red_color] * r
+        )
+        for by in range(bar_h):
+            y = y0 + by
+            for i, color in enumerate(colors):
+                _put(frame, left + i, y, "█", color)
+    return frame
 
 
-def _render_text(time_str: str, rows: int, cols: int) -> list[str]:
-    grid = [" " * cols for _ in range(rows)]
-    row = (rows - 1) // 2 if rows else 0
-    if 0 <= row < rows:
-        grid[row] = time_str.center(cols)[:cols].ljust(cols)
-    return grid
+def _render_text(
+    time_str: str,
+    rows: int,
+    cols: int,
+    style: Style | None = None,
+    state: iv.IntervalState | None = None,
+) -> Frame:
+    style = style or Style()
+    frame = Frame.blank(rows, cols)
+    ink = _ink_color(style, state)
+    bar_h = 1 if (state is not None and style.interval_bar and rows >= 3) else 0
+    bar_gap = 1 if bar_h and style.padding else 0
+    stack_h = 1 + bar_gap + bar_h
+    top = max(0, (rows - stack_h) // 2)
+    centered = time_str.center(cols)[:cols].ljust(cols) if cols else ""
+    if 0 <= top < rows:
+        _blit(frame, 0, top, centered, ink)
+    if bar_h and state is not None:
+        idx = centered.find(time_str) if time_str and time_str in centered else max(
+            0, (cols - len(time_str)) // 2
+        )
+        n, a, r = iv.bar_widths(
+            state.fill_normal, state.fill_amber, state.fill_red, len(time_str)
+        )
+        colors = (
+            [style.clock_color] * n
+            + [style.interval_amber_color] * a
+            + [style.interval_red_color] * r
+        )
+        y = top + 1 + bar_gap
+        for i, color in enumerate(colors):
+            _put(frame, idx + i, y, "█", color)
+    return frame
+
+
+def render_frame(
+    time_str: str,
+    rows: int,
+    cols: int,
+    style: Style | None = None,
+    suffix: str = "",
+    now_s: int | None = None,
+) -> Frame:
+    """Full frame (characters + per-cell colours)."""
+    style = style or Style()
+    rows, cols = max(rows, 0), max(cols, 0)
+    state = None
+    if style.interval_minutes > 0 and now_s is not None:
+        state = iv.interval_state(
+            now_s,
+            style.interval_minutes * 60,
+            start_s=style.interval_start_s,
+            amber_s=style.interval_amber_s,
+            red_s=style.interval_red_s,
+        )
+    if choose_mode(rows) == "art":
+        lay = fit(rows, cols, time_str, style=style, suffix=suffix)
+        if lay is not None:
+            return render_art(
+                time_str, rows, cols, lay, suffix=suffix, style=style, state=state
+            )
+    return _render_text(_label(time_str, suffix), rows, cols, style=style, state=state)
 
 
 def render(
@@ -334,12 +508,9 @@ def render(
     cols: int,
     style: Style | None = None,
     suffix: str = "",
+    now_s: int | None = None,
 ) -> list[str]:
     """Return exactly ``rows`` lines of exactly ``cols`` chars."""
-    style = style or Style()
-    rows, cols = max(rows, 0), max(cols, 0)
-    if choose_mode(rows) == "art":
-        lay = fit(rows, cols, time_str, style=style, suffix=suffix)
-        if lay is not None:
-            return render_art(time_str, rows, cols, lay, suffix=suffix)
-    return _render_text(_label(time_str, suffix), rows, cols)
+    return render_frame(
+        time_str, rows, cols, style=style, suffix=suffix, now_s=now_s
+    ).chars

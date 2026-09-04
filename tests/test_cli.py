@@ -5,34 +5,39 @@ import time as _time
 
 import pytest
 
-from term_clock import cli, core
+from term_clock import cli, config as cfg, core
+
+
+@pytest.fixture(autouse=True)
+def _no_user_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(cfg, "default_config_path", lambda: tmp_path / "missing.conf")
 
 
 class TestFrameFor:
     def test_uses_current_time_and_size(self):
         t = _time.struct_time((2026, 9, 3, 12, 34, 56, 0, 0, -1))
         frame = cli.frame_for(t, cols=80, rows=3)
-        assert len(frame) == 3
-        assert any("12:34:56" in line for line in frame)
+        assert len(frame.chars) == 3
+        assert any("12:34:56" in line for line in frame.chars)
 
     def test_art_for_tall_terminal(self):
         t = _time.struct_time((2026, 9, 3, 1, 2, 3, 0, 0, -1))
         frame = cli.frame_for(t, cols=120, rows=20)
-        assert core.BLOCK in "\n".join(frame)
+        assert core.BLOCK in "\n".join(frame.chars)
 
     def test_twelve_hour_text_includes_ampm(self):
         t = _time.struct_time((2026, 9, 3, 0, 0, 0, 0, 0, -1))
         frame = cli.frame_for(
             t, cols=80, rows=3, style=core.Style(hour_format="12")
         )
-        assert any("12:00:00 AM" in line for line in frame)
+        assert any("12:00:00 AM" in line for line in frame.chars)
 
     def test_twelve_hour_afternoon(self):
         t = _time.struct_time((2026, 9, 3, 13, 5, 6, 0, 0, -1))
         frame = cli.frame_for(
             t, cols=80, rows=3, style=core.Style(hour_format="12")
         )
-        assert any("01:05:06 PM" in line for line in frame)
+        assert any("01:05:06 PM" in line for line in frame.chars)
 
 
 class TestPaint:
@@ -51,8 +56,9 @@ class TestPaint:
         out = io.StringIO()
         painter = cli.Painter(out)
         painter.paint(["aaa", "bbb"])
-        assert out.getvalue().startswith("\x1b[H\x1b[2J\x1b[3J")
-        assert out.getvalue().endswith("aaa\nbbb")
+        raw = out.getvalue()
+        assert "\x1b[H\x1b[2J\x1b[3J" in raw
+        assert raw.endswith("aaa\nbbb")
 
     def test_later_paint_only_writes_changed_cells(self):
         out = io.StringIO()
@@ -75,8 +81,30 @@ class TestPaint:
         n = len(out.getvalue())
         painter.paint(["xABx"])
         delta = out.getvalue()[n:]
-        assert delta.count("\x1b[") == 1
-        assert "\x1b[1;2HAB" in delta
+        assert "\x1b[1;2H" in delta
+        assert "AB" in delta
+        assert delta.count("\x1b[1;") == 1
+
+    def test_default_color_resets_after_red(self):
+        out = io.StringIO()
+        painter = cli.Painter(out)
+        painter.paint(core.Frame.from_chars(["██"], ink="#ff0000"))
+        n = len(out.getvalue())
+        painter.paint(core.Frame.from_chars(["██"]))
+        delta = out.getvalue()[n:]
+        assert "39" in delta
+
+    def test_color_change_without_glyph_change_is_written(self):
+        out = io.StringIO()
+        painter = cli.Painter(out)
+        a = core.Frame.from_chars(["██"], ink="#ffffff")
+        painter.paint(a)
+        n = len(out.getvalue())
+        b = core.Frame.from_chars(["██"], ink="#ff0000")
+        painter.paint(b)
+        delta = out.getvalue()[n:]
+        assert "\x1b[" in delta
+        assert "255;0;0" in delta
 
 
 class TestArgs:
@@ -85,6 +113,14 @@ class TestArgs:
         assert ns.padding == 1
         assert ns.spacing == 2
         assert ns.hour_format is None
+        assert ns.interval == 15
+        assert ns.interval_start == 0
+        assert ns.interval_amber == 5
+        assert ns.interval_red == 1
+        assert ns.interval_amber_color == "#f09000"
+        assert ns.interval_red_color == "#ff0000"
+        assert ns.interval_bar is True
+        assert ns.clock_color is None
 
     def test_flags(self):
         ns = cli.parse_args(
@@ -102,9 +138,38 @@ class TestArgs:
         with pytest.raises(SystemExit):
             cli.parse_args(["--hour-format", "36"])
 
-    def test_no_hz_flag(self):
-        with pytest.raises(SystemExit):
-            cli.parse_args(["--hz", "25"])
+    def test_interval_off(self):
+        ns = cli.parse_args(["--interval", "off"])
+        assert ns.interval == 0
+        st = cli.style_from_args(ns)
+        assert st.interval_minutes == 0
+        assert st.interval_bar is False
+
+    def test_interval_bar_off(self):
+        ns = cli.parse_args(["--interval-bar", "off"])
+        assert ns.interval_bar is False
+
+    def test_config_file(self, tmp_path):
+        p = tmp_path / "term-clock.conf"
+        p.write_text(
+            "[term-clock]\n"
+            "interval = 27\n"
+            "interval-start = 9:00\n"
+            "interval-bar = off\n"
+            "clock-color = #abc123\n",
+            encoding="utf-8",
+        )
+        ns = cli.parse_args(["--config-file", str(p)])
+        assert ns.interval == 27
+        assert ns.interval_start == 9 * 3600
+        assert ns.interval_bar is False
+        assert ns.clock_color == "#abc123"
+
+    def test_cli_overrides_config(self, tmp_path):
+        p = tmp_path / "term-clock.conf"
+        p.write_text("[term-clock]\ninterval = 27\n", encoding="utf-8")
+        ns = cli.parse_args(["--config-file", str(p), "--interval", "10"])
+        assert ns.interval == 10
 
 
 class TestSecondAlign:
@@ -113,31 +178,14 @@ class TestSecondAlign:
         assert cli.next_second_ms(1000.0) == 2000.0
         assert cli.next_second_ms(1999.0) == 2000.0
 
-    def test_sleep_is_remainder_minus_lead(self):
-        assert cli.sleep_ms(1500.0, target_ms=2000.0, lead_ms=0.0) == 500.0
-        assert cli.sleep_ms(1500.0, target_ms=2000.0, lead_ms=12.0) == 488.0
+    def test_wait_is_remainder_until_the_boundary(self):
+        assert cli.wait_ms(1500.0, target_ms=2000.0) == 500.0
+        assert cli.wait_ms(1997.0, target_ms=2000.0) == 3.0
 
-    def test_sleep_does_not_skip_the_boundary(self):
-        # 3 ms left, but lead is 10 ms — still wait out those 3 ms
-        assert cli.sleep_ms(1997.0, target_ms=2000.0, lead_ms=10.0) == 3.0
-
-    def test_sleep_zero_when_already_there(self):
-        assert cli.sleep_ms(2000.0, target_ms=2000.0, lead_ms=0.0) == 0.0
-        assert cli.sleep_ms(2005.0, target_ms=2000.0, lead_ms=0.0) == 0.0
-
-    def test_lead_unchanged_within_two_ms(self):
-        assert cli.adjust_lead_ms(8.0, error_ms=1.5) == 8.0
-        assert cli.adjust_lead_ms(8.0, error_ms=-2.0) == 8.0
-
-    def test_lead_grows_when_late(self):
-        assert cli.adjust_lead_ms(8.0, error_ms=5.0) == 13.0
-
-    def test_lead_shrinks_when_early(self):
-        assert cli.adjust_lead_ms(8.0, error_ms=-3.0) == 5.0
-
-    def test_lead_is_clamped(self):
-        assert cli.adjust_lead_ms(0.0, error_ms=-10.0) == 0.0
-        assert cli.adjust_lead_ms(95.0, error_ms=20.0) == 100.0
+    def test_wait_is_one_ms_when_already_past_target(self):
+        # still on the old displayed second, so do not busy-spin
+        assert cli.wait_ms(2000.0, target_ms=2000.0) == 1.0
+        assert cli.wait_ms(2005.0, target_ms=2000.0) == 1.0
 
 
 class TestRunLoop:
@@ -175,5 +223,49 @@ class TestRunLoop:
             sleep=fake_sleep,
             now_ms=lambda: 1500.0,
         )
-        # 500 ms to the next wall-clock second; resize waits until then
+        # 500 ms to the next wall-clock second
         assert seen == [0.5]
+
+    def test_paints_the_new_second_instead_of_sleeping_past_it(self):
+        # First paint sampled second 5; by the wait check we are already in 6.
+        secs = [5, 6, 6, 6]
+        seen = []
+
+        def get_time():
+            s = secs.pop(0) if secs else 6
+            return _time.struct_time((2026, 9, 4, 12, 0, s, 0, 0, -1))
+
+        def fake_sleep(dt):
+            seen.append(dt)
+            raise KeyboardInterrupt
+
+        cli.run(
+            out=io.StringIO(),
+            get_size=lambda: (80, 24),
+            get_time=get_time,
+            sleep=fake_sleep,
+            now_ms=lambda: 6100.0,
+        )
+        # Caught up to second 6 immediately; then wait for 7 (900 ms).
+        assert seen == [0.9]
+
+    def test_sleeps_one_ms_if_past_the_boundary_but_second_unchanged(self):
+        t = _time.struct_time((2026, 9, 4, 12, 0, 5, 0, 0, -1))
+        nows = [1500.0, 2100.0]
+        seen = []
+
+        def now_ms():
+            return nows.pop(0) if nows else 2100.0
+
+        def fake_sleep(dt):
+            seen.append(dt)
+            raise KeyboardInterrupt
+
+        cli.run(
+            out=io.StringIO(),
+            get_size=lambda: (80, 24),
+            get_time=lambda: t,
+            sleep=fake_sleep,
+            now_ms=now_ms,
+        )
+        assert seen == [0.001]

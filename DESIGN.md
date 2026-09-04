@@ -303,13 +303,50 @@ ASCII `AM`/`PM` to the right of the digits.
 The project is renamed from `ssh-clock` / `ssh_clock` to `term-clock` /
 `term_clock`.
 
+### Step 18 — wait for the displayed second to change (feedback)
+
+`lead_ms` woke us *before* the second. `paint()` sampled `localtime` still
+on second S, then `next_second_ms(now)` saw S+1 and slept until S+2, so a
+second was skipped. `lead_ms` is gone. After each paint we sleep the
+remainder until the next whole second, and keep sleeping (1 ms once past
+the boundary) until `localtime`'s (h, m, s) actually differs from the
+frame we last showed. If the second has already moved on, the wait loop
+is empty and we paint immediately.
+
+### Step 19 — square bar ends, keep curve chamfers (feedback)
+
+Free ends of horizontal and vertical bars were getting the same 45° cut as
+outer elbows, so a 2's top-left and a 4's vertical tips looked pointed.
+A termination is now detected as a pair of convex corners spanning stroke
+thickness ``t``; those stay square. Unpaired convex corners (L-joints of
+two segments) still get the 1:1 triangle stair.
+
+### Step 20 — interval colours, bar, config, clock/background colour (feedback)
+
+`--interval` (default 15, or `off`) tiles a grid from `--interval-start`.
+Amber/red windows colour the digits; the bar under the digits (gap =
+padding, height = stroke `t`) fills in default then amber then red.
+`~/.config/term-clock/term-clock.conf` plus `--config-file`. Optional
+`--clock-color` / `--background-color` hex.
+
+### Step 21 — brighter default amber (feedback)
+
+Default `--interval-amber-color` is `#f09000` (was `#d07000`).
+
+### Step 22 — reset SGR when leaving red/amber (feedback)
+
+Diff paints omitted SGR when the ink was the terminal default, so after red
+the next interval's digits and bar stayed red. Every run now emits an
+explicit foreground (including `39` for default).
+
 ## 5. Final state
 
-- 86 tests, all passing.
+- 113 tests, all passing. Intervals default on (15 minutes from `0:00`).
 - `core.py` pure and total (returns exact-size grids for any input, including
   degenerate sizes); `cli.py` is the only module that touches the terminal.
-- Big digits: seven-segment rectangles of `█` with 1:1 45° corner stairs of
-  `◤ ◥ ◣ ◢`. Colons are small block pairs, no diagonals.
+- Big digits: seven-segment rectangles of `█`. Free bar ends are square;
+  outer L-joint curves get 1:1 45° stairs of `◤ ◥ ◣ ◢`. Colons are small
+  block pairs, no diagonals.
 - `--padding` (default 1), `--spacing` (default 2), `--hour-format` 12 or 24
   (default: system, else 24).
 - Aspect: default cell is 5t×5t characters; each axis may stretch by at most

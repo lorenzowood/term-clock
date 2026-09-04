@@ -137,6 +137,35 @@ class TestGlyph:
         assert rows[0][0] == " " and rows[0][1] == "◢"
         assert rows[1][0] == "◢"
 
+    def test_two_has_square_horizontal_ends_but_keeps_curves(self):
+        lay = core.Layout(t=4, hw=12, vh=4, gap=2, colon_w=4)
+        rows = core.paint("2", lay)
+        # left end of A (F off) is a termination — square
+        assert rows[0][0] == "█"
+        assert rows[3][0] == "█"
+        # right end of D (C off) is a termination — square
+        assert rows[-1][-1] == "█"
+        # A–B top-right and D–E bottom-left stay as external curves
+        assert "◣" in "".join(rows[:3])
+        assert "◥" in "".join(rows[-3:])
+
+    def test_four_has_square_vertical_ends(self):
+        lay = core.Layout(t=4, hw=12, vh=4, gap=2, colon_w=4)
+        rows = core.paint("4", lay)
+        w = lay.digit_w
+        assert rows[0] == "█" * lay.t + " " * (w - 2 * lay.t) + "█" * lay.t
+        assert rows[-1] == " " * (w - lay.t) + "█" * lay.t
+        # F–G left elbow is still an external curve
+        blob = "".join(rows)
+        assert "◥" in blob
+
+    def test_one_has_square_ends(self):
+        lay = core.Layout(t=4, hw=12, vh=4, gap=2, colon_w=4)
+        rows = core.paint("1", lay)
+        assert rows[0].strip() == "█" * lay.t
+        assert rows[-1].strip() == "█" * lay.t
+        assert set("".join(rows)) <= {" ", "█"}
+
     def test_no_adjacent_same_triangles(self):
         lay = core.Layout(t=4, hw=12, vh=4, gap=2, colon_w=4)
         for ch in "0123456789":
@@ -269,3 +298,65 @@ class TestRender:
         g = core.render("12:34:56", rows=12, cols=18)
         assert any("12:34:56" in line for line in g)
         assert "█" not in "".join(g)
+
+
+class TestIntervalBar:
+    def _style(self, **kw):
+        return core.Style(
+            interval_minutes=15,
+            interval_bar=True,
+            interval_amber_s=5 * 60,
+            interval_red_s=60,
+            **kw,
+        )
+
+    def test_bar_sits_below_digits(self):
+        # 14 min into a 15-min block: almost full bar, in red zone
+        g = core.render(
+            "12:14:00",
+            rows=24,
+            cols=140,
+            style=self._style(),
+            now_s=12 * 3600 + 14 * 60,
+        )
+        used = [i for i, line in enumerate(g) if line.strip()]
+        assert used
+        # last used row is the bar, not a digit (digits have mixed gaps)
+        bar = g[used[-1]]
+        assert "█" in bar
+        # bar is narrower than the full frame and inset from the edges
+        assert bar.strip() != bar
+        assert len(bar.strip()) < 140
+
+    def test_bar_grows_with_elapsed_time(self):
+        early = "".join(
+            core.render(
+                "12:01:00",
+                rows=24,
+                cols=140,
+                style=self._style(),
+                now_s=12 * 3600 + 60,
+            )
+        ).count("█")
+        late = "".join(
+            core.render(
+                "12:14:00",
+                rows=24,
+                cols=140,
+                style=self._style(),
+                now_s=12 * 3600 + 14 * 60,
+            )
+        ).count("█")
+        assert late > early
+
+    def test_no_bar_when_interval_off(self):
+        coloured = core.render_frame(
+            "12:14:00",
+            rows=24,
+            cols=140,
+            style=self._style(),
+            now_s=12 * 3600 + 14 * 60,
+        )
+        assert any(c == "#ff0000" for row in coloured.fg for c in row)
+        plain = core.render_frame("12:14:00", rows=24, cols=140, now_s=12 * 3600 + 14 * 60)
+        assert all(c is None for row in plain.fg for c in row)
