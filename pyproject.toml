@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "term-clock"
+name = "term-clock-app"
 version = "1.0.0"
 description = "A terminal digital clock that scales to fill the window."
 readme = "README.md"

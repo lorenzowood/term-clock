@@ -9,8 +9,10 @@ CTRL+C returns you to the prompt.
 ## Install
 
 ```sh
-pip install term-clock
+pip install term-clock-app
 ```
+
+The PyPI name is `term-clock-app` because `term-clock` / `termclock` is already taken. The command you run is still `term-clock`.
 
 From a clone:
 
