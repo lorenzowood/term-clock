@@ -1,4 +1,4 @@
-# SSH Clock — Design & Development Log
+# Term Clock — Design & Development Log
 
 A running record of the design process, kept as work proceeds (per the brief's
 requirement to document the process and to use strict TDD).
@@ -249,3 +249,69 @@ no ragged edges, only blocks and triangles.
 - Known simple choices: two hand-tuned font sizes; colon dots are chamfered
   rectangles; the triangle staircase at large non-square scales is stepped but
   clean.
+
+### Step 11 — drop sampling; draw only H, V, and 1:1 45° (feedback)
+
+The integer expansion of triangle cells still produced off-angle stairs when
+`nx != ny`. The font is now drawn directly at the output size: horizontal and
+vertical bars are rectangles of `█`; convex corners are a 1:1 stair of size
+`max(1, t//2)` using `◤ ◥ ◣ ◢`. No coverage sampling.
+
+`Layout(t, hw, vh, gap, colon_w)`: a digit is `2t+hw` × `3t+2vh`. Default
+cell is 5t×5t; each axis may stretch ≤ 1.5× (`MAX_ASPECT`).
+
+### Step 12 — style knobs (feedback)
+
+`--padding N` (default 1) and `--spacing N` (default 2). Padding is a blank
+frame so the clock never sits on the window edge.
+
+### Step 13 — colon dots (feedback)
+
+Colons are two axis-aligned `█` rectangles (no 45° cuts), centred, whose
+combined span is at most `digit_h / 3` (3 rows on a tiny digit so the two
+dots still have a hole). 1-row dots are 2 wide; larger dots are square.
+
+### Step 14 — stop filling the scrollback (feedback)
+
+Each paint already went home + `2J`, but a full-width last line wraps and
+every tick landed in the scroll buffer. Clear is now home + `2J` + `3J`
+(visible screen *and* saved lines), and wraparound is switched off for the
+run so the last cell cannot scroll.
+
+### Step 15 — diff the frame instead of clearing (feedback)
+
+Full-screen clear every tick flickered. `Painter` now keeps the last frame as
+an off-screen buffer. First paint (or a resize) still clears and draws; after
+that only runs of changed cells are written, each prefixed with a CUP
+(`row;col` H). Unchanged cells are left alone.
+
+### Step 16 — poll rate, then sleep to the second (feedback)
+
+Fixed-rate polling jittered under load. The loop now paints, sleeps until the
+next wall-clock second minus a learned `lead_ms`, and if the wake error is
+more than 2 ms, shifts `lead_ms` (clamped 0–100 ms).
+
+### Step 17 — drop `--hz`, add `--hour-format`, rename (feedback)
+
+`--hz` is gone. Resize waits until the next second.
+
+`--hour-format {12,24}`: default is the system clock via
+`locale.setlocale(LC_TIME, "")` + `nl_langinfo(T_FMT)` (`%I` / `%p` / `%r`
+→ 12, otherwise 24). 12-hour: 0→12 AM, 12→12 PM, 13→1 PM. Art mode places
+ASCII `AM`/`PM` to the right of the digits.
+
+The project is renamed from `ssh-clock` / `ssh_clock` to `term-clock` /
+`term_clock`.
+
+## 5. Final state
+
+- 86 tests, all passing.
+- `core.py` pure and total (returns exact-size grids for any input, including
+  degenerate sizes); `cli.py` is the only module that touches the terminal.
+- Big digits: seven-segment rectangles of `█` with 1:1 45° corner stairs of
+  `◤ ◥ ◣ ◢`. Colons are small block pairs, no diagonals.
+- `--padding` (default 1), `--spacing` (default 2), `--hour-format` 12 or 24
+  (default: system, else 24).
+- Aspect: default cell is 5t×5t characters; each axis may stretch by at most
+  1.5× (longer bars, same stroke thickness) before leftover space is centred.
+  Text fallback when even t=1 does not fit.

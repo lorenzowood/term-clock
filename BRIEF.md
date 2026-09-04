@@ -1,4 +1,4 @@
-# SSH Clock
+# Term Clock
 
 Write a clock program that could be used over SSH (or just in a terminal).
 

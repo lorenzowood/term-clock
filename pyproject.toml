@@ -3,16 +3,44 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ssh-clock"
+name = "term-clock"
 version = "1.0.0"
-description = "A terminal digital clock that scales to fill the available space."
+description = "A terminal digital clock that scales to fill the window."
+readme = "README.md"
 requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Lorenzo Wood" }]
+keywords = ["clock", "terminal", "tui", "ssh"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Terminals",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/lorenzowood/term-clock"
+Repository = "https://github.com/lorenzowood/term-clock"
+Issues = "https://github.com/lorenzowood/term-clock/issues"
 
 [project.scripts]
-ssh-clock = "ssh_clock.cli:main"
+term-clock = "term_clock.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [tool.setuptools]
-packages = ["ssh_clock"]
+packages = ["term_clock"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
